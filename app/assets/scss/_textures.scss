@@ -1,0 +1,23 @@
+@use './tokens' as *;
+
+@mixin linen-surface {
+  position: relative;
+  isolation: isolate;
+
+  &::after {
+    position: absolute;
+    z-index: -1;
+    inset: 0;
+    background-image: url('../textures/linen.png');
+    content: '';
+    opacity: 0.12;
+    pointer-events: none;
+  }
+}
+
+@mixin pigment-splash($color: $vermilion) {
+  background:
+    radial-gradient(circle at 20% 30%, rgba($color, 0.24) 0 5px, transparent 6px),
+    radial-gradient(circle at 70% 65%, rgba($color, 0.18) 0 18px, transparent 19px),
+    radial-gradient(ellipse at center, rgba($color, 0.14), transparent 68%);
+}

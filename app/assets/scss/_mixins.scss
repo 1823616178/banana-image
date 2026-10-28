@@ -1,0 +1,50 @@
+@use './tokens' as *;
+
+@mixin paper-panel {
+  border: 1px solid var(--color-border);
+  border-radius: $radius-medium;
+  background: var(--color-paper);
+  box-shadow: $soft-shadow;
+}
+
+@mixin painted-frame {
+  border: 1px solid rgba($frame-gold, 0.72);
+  outline: 5px solid var(--color-paper);
+  outline-offset: -9px;
+  box-shadow: 0 0 0 7px rgba($frame-gold, 0.38), $warm-shadow;
+}
+
+@mixin ink-focus {
+  &:focus-visible {
+    outline: 3px solid rgba($ultramarine, 0.35);
+    outline-offset: 3px;
+  }
+}
+
+@mixin paint-chip {
+  @include ink-focus;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-canvas);
+  color: var(--color-ink-soft);
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+
+  &:hover {
+    transform: translateY(-2px);
+  }
+
+  &.is-active {
+    border-color: var(--color-primary);
+    background: var(--color-chip-active);
+    box-shadow: 0 3px 0 var(--color-primary);
+    color: var(--color-ink);
+    transform: translateY(-2px);
+  }
+}
+
+@mixin text-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
