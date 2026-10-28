@@ -1,4 +1,5 @@
-import { Column, CreateDateColumn, DeleteDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm'
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm'
+import { CreatedAt, DeletedAt, UpdatedAt } from '#server/db/columns'
 import type { ImageSource } from '#shared/types/api'
 
 @Entity('images')
@@ -40,12 +41,12 @@ export class Image {
   @Column({ type: 'boolean', default: false })
   isFavorite!: boolean
 
-  @DeleteDateColumn({ type: 'datetime', precision: 3, nullable: true })
+  @DeletedAt()
   deletedAt!: Date | null
 
-  @CreateDateColumn({ type: 'datetime', precision: 3 })
+  @CreatedAt()
   createdAt!: Date
 
-  @UpdateDateColumn({ type: 'datetime', precision: 3 })
+  @UpdatedAt()
   updatedAt!: Date
 }

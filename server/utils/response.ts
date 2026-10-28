@@ -1,6 +1,6 @@
 import type { H3Event } from 'h3'
 import type { ApiFailure, ApiSuccess } from '#shared/types/api'
-import { AppError, errorMessage } from '#server/utils/errors'
+import { AppError, errorMessage, logCaughtError } from '#server/utils/errors'
 
 export function ok<T>(data: T, message = 'ok'): ApiSuccess<T> {
   return { code: 0, data, message }
@@ -13,7 +13,7 @@ export async function respond<T>(event: H3Event, action: () => Promise<T> | T): 
     const appError = error instanceof AppError
       ? error
       : new AppError('INTERNAL_ERROR', '服务器暂时无法完成请求', 500)
-    if (!(error instanceof AppError)) console.error(error)
+    logCaughtError('api', error)
     setResponseStatus(event, appError.statusCode)
     return {
       code: appError.code,

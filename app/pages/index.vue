@@ -10,9 +10,16 @@ const imageSize = ref<ImageSize>('1K')
 const count = ref(1)
 const requestPending = ref(false)
 const activeGeneration = ref<GenerationDto | null>(null)
+const activeGenerationKey = 'banana-active-generation'
 let pollTimer: ReturnType<typeof setTimeout> | undefined
+let pollSerial = 0
 
-const modelOptions = DEFAULT_MODELS.map(item => ({ value: item.id, label: item.name, hint: item.description }))
+const modelOptions = computed(() => DEFAULT_MODELS.map(item => ({
+  value: item.id,
+  label: item.name,
+  hint: item.description,
+  caption: item.prices[imageSize.value] > 0 ? `$${item.prices[imageSize.value].toFixed(3)} / 张` : '未标价',
+})))
 const ratioOptions = ASPECT_RATIOS.map(value => ({ value, label: value }))
 const sizeOptions = IMAGE_SIZES.map(value => ({ value, label: value }))
 const countOptions = [1, 2, 3, 4].map(value => ({ value, label: `${value} 张` }))
@@ -22,23 +29,59 @@ const isGenerating = computed(() => requestPending.value || ['queued', 'running'
 const resultTitle = computed(() => activeGeneration.value ? `任务 #${activeGeneration.value.id}` : '等待第一笔色彩')
 
 function errorMessage(error: unknown) {
-  const failure = error as { data?: ApiFailure, message?: string }
+  const failure = error as { data?: ApiFailure, message?: string, statusCode?: number, status?: number }
   return failure.data?.message ?? failure.message ?? '操作失败，请稍后重试'
 }
 
-async function pollGeneration(id: string) {
+function isMissingGeneration(error: unknown) {
+  const failure = error as { statusCode?: number, status?: number }
+  return (failure.statusCode ?? failure.status) === 404
+}
+
+function rememberGeneration(id: string) {
+  localStorage.setItem(activeGenerationKey, id)
+}
+
+function forgetGeneration() {
+  localStorage.removeItem(activeGenerationKey)
+}
+
+function showGeneration(generation: GenerationDto) {
+  activeGeneration.value = generation
+  if (prompt.value.trim()) return
+  prompt.value = generation.prompt
+  model.value = generation.model
+  aspectRatio.value = generation.aspectRatio
+  imageSize.value = generation.imageSize
+  count.value = generation.count
+}
+
+function startPolling(id: string, announce: boolean) {
+  const serial = ++pollSerial
+  clearTimeout(pollTimer)
+  void pollGeneration(id, announce, serial)
+}
+
+async function pollGeneration(id: string, announce: boolean, serial: number) {
   try {
     const response = await $fetch<ApiSuccess<GenerationDto>>(`/api/generations/${id}`)
-    activeGeneration.value = response.data
+    if (serial !== pollSerial) return
+    rememberGeneration(id)
+    showGeneration(response.data)
     if (['queued', 'running'].includes(response.data.status)) {
-      pollTimer = setTimeout(() => pollGeneration(id), 1500)
-    } else if (response.data.status === 'succeeded' || response.data.status === 'partial') {
+      pollTimer = setTimeout(() => void pollGeneration(id, true, serial), 1500)
+      return
+    }
+    if (!announce) return
+    if (response.data.status === 'succeeded' || response.data.status === 'partial') {
       toast.show('画作已完成，颜料已经干透。', 'success')
     } else {
       toast.show(response.data.errorMessage ?? '生成未完成，请到任务页查看原因。', 'error')
     }
   } catch (error) {
-    toast.show(errorMessage(error), 'error')
+    if (serial !== pollSerial) return
+    if (isMissingGeneration(error)) forgetGeneration()
+    if (announce) toast.show(errorMessage(error), 'error')
   }
 }
 
@@ -50,6 +93,7 @@ async function generate() {
   if (isGenerating.value) return
 
   requestPending.value = true
+  const previous = activeGeneration.value
   activeGeneration.value = null
   try {
     const response = await $fetch<ApiSuccess<{ id: string }>>('/api/generations', {
@@ -63,9 +107,11 @@ async function generate() {
         refImageIds: [],
       },
     })
+    rememberGeneration(response.data.id)
     toast.show('任务已入队，画笔开始蘸取颜料。', 'success')
-    await pollGeneration(response.data.id)
+    startPolling(response.data.id, true)
   } catch (error) {
+    activeGeneration.value = previous
     toast.show(errorMessage(error), 'error')
   } finally {
     requestPending.value = false
@@ -79,7 +125,15 @@ function onPromptKeydown(event: KeyboardEvent) {
   }
 }
 
-onUnmounted(() => clearTimeout(pollTimer))
+onMounted(() => {
+  const id = localStorage.getItem(activeGenerationKey) ?? ''
+  if (/^\d{1,20}$/.test(id) && id !== '0') startPolling(id, false)
+})
+
+onUnmounted(() => {
+  pollSerial += 1
+  clearTimeout(pollTimer)
+})
 </script>
 
 <template>

@@ -1,4 +1,5 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm'
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm'
+import { CreatedAt, UpdatedAt } from '#server/db/columns'
 
 @Entity('settings')
 export class Setting {
@@ -11,9 +12,9 @@ export class Setting {
   @Column({ type: 'json' })
   value!: unknown
 
-  @CreateDateColumn({ type: 'datetime', precision: 3 })
+  @CreatedAt()
   createdAt!: Date
 
-  @UpdateDateColumn({ type: 'datetime', precision: 3 })
+  @UpdatedAt()
   updatedAt!: Date
 }

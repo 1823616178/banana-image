@@ -1,4 +1,5 @@
-import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm'
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm'
+import { CreatedAt, UpdatedAt } from '#server/db/columns'
 import type { AspectRatio, GenerationStatus, ImageSize } from '#shared/types/api'
 
 @Entity('generations')
@@ -84,9 +85,9 @@ export class Generation {
   @Column({ type: 'datetime', precision: 3, nullable: true })
   cancelRequestedAt!: Date | null
 
-  @CreateDateColumn({ type: 'datetime', precision: 3 })
+  @CreatedAt()
   createdAt!: Date
 
-  @UpdateDateColumn({ type: 'datetime', precision: 3 })
+  @UpdatedAt()
   updatedAt!: Date
 }

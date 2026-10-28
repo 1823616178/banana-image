@@ -11,7 +11,7 @@ import { getRedis } from '#server/services/redis'
 import { getSettingsMap, settingValue } from '#server/services/settings'
 import { deleteStoredFiles, readStoredImage, saveImage } from '#server/services/storage'
 import { generateWithVertex } from '#server/services/vertex'
-import { AppError } from '#server/utils/errors'
+import { AppError, logCaughtError } from '#server/utils/errors'
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -103,7 +103,8 @@ export async function processGeneration(id: string) {
         const retryable = (classified.retry === 'quota' && attempt < 3)
           || (classified.retry === 'timeout' && attempt < 1)
           || (classified.retry === 'transient' && attempt < 2)
-        if (!retryable) throw new AppError(classified.code, classified.message, 502)
+        if (!retryable) throw new AppError(classified.code, classified.message, 502, undefined, { cause: error })
+        logCaughtError(`worker generation ${generation.id} attempt ${attempt + 1} retrying`, error)
         await delay(2 ** attempt * 1000)
       }
     }
@@ -117,6 +118,7 @@ export async function processGeneration(id: string) {
 
   for (const [index, outcome] of outcomes.entries()) {
     if (outcome.status === 'rejected') {
+      logCaughtError(`worker generation ${id} image ${index + 1}`, outcome.reason)
       const classified = classifyGenerationError(outcome.reason)
       errors.push(`第 ${index + 1} 张：${classified.message}`)
       blocked ||= classified.blocked
@@ -128,6 +130,7 @@ export async function processGeneration(id: string) {
       savedImages.push(await persistGeneratedImage(generation, outcome.value.images[0]!.data, index))
       await setTaskStatus(id, 'running', Math.round((index + 1) / generation.count * 100))
     } catch (error) {
+      logCaughtError(`worker generation ${id} image ${index + 1} save`, error)
       errors.push(`第 ${index + 1} 张保存失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -154,9 +157,13 @@ export async function processGeneration(id: string) {
   })
   await setTaskStatus(id, status, 100, errorMessage ?? '')
   await recordUsage(generation, savedImages.length, inputTokens, outputTokens, costUsd).catch((error) => {
-    console.error(`[worker] failed to record usage for ${id}: ${error instanceof Error ? error.message : String(error)}`)
+    logCaughtError(`worker generation ${id} usage`, error)
   })
-  await Promise.allSettled([recordDailyCost(costUsd), clearGalleryCache()])
+  const sideEffects = await Promise.allSettled([recordDailyCost(costUsd), clearGalleryCache()])
+  for (const result of sideEffects) {
+    if (result.status === 'rejected') logCaughtError(`worker generation ${id}`, result.reason)
+  }
+  return status
 }
 
 export async function recoverGenerationQueue() {

@@ -9,6 +9,7 @@ const { initializeDatabase, dataSource } = await import('#server/db/data-source'
 const { GENERATION_QUEUE, setTaskStatus } = await import('#server/services/generation')
 const { processGeneration, recoverGenerationQueue } = await import('#server/services/generationWorker')
 const { classifyGenerationError } = await import('#server/services/generationErrors')
+const { logCaughtError } = await import('#server/utils/errors')
 const { connectRedis, getRedis, closeRedis } = await import('#server/services/redis')
 const { Generation } = await import('#server/db/entities/Generation')
 
@@ -26,7 +27,9 @@ function generationId(entry: string) {
 }
 
 async function releaseLock(id: string, token: string) {
-  await getRedis().eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, `bi:lock:gen:${id}`, token).catch(() => {})
+  await getRedis().eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, `bi:lock:gen:${id}`, token).catch((error) => {
+    logCaughtError(`worker generation ${id} lock`, error)
+  })
 }
 
 async function runTask(id: string, consumerId: string) {
@@ -58,6 +61,7 @@ async function runTask(id: string, consumerId: string) {
   if (!generation || generation.attemptCount > generation.maxAttempts) {
     await repository.update({ id }, { status: 'failed', errorCode: 'MAX_ATTEMPTS_EXCEEDED', errorMessage: '任务超过最大执行次数', workerId: null, leaseExpiresAt: null })
     await setTaskStatus(id, 'failed', 100, '任务超过最大执行次数')
+    console.error(`[worker] generation ${id} exceeded max attempts`)
     await releaseLock(id, token)
     return
   }
@@ -68,17 +72,19 @@ async function runTask(id: string, consumerId: string) {
     void Promise.all([
       repository.update({ id, workerId: consumerId }, { heartbeatAt: new Date(), leaseExpiresAt: expiresAt }),
       getRedis().eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end', 1, lockKey, token, '300000'),
-    ]).catch(() => {})
+    ]).catch((error) => {
+      logCaughtError(`worker generation ${id} heartbeat`, error)
+    })
   }, 20_000)
 
   try {
-    await processGeneration(id)
-    console.info(`[worker] generation ${id} finished`)
+    const status = await processGeneration(id)
+    if (status) console.info(`[worker] generation ${id} ${status}`)
   } catch (error) {
     const classified = classifyGenerationError(error)
     await repository.update({ id }, { status: 'failed', errorCode: classified.code, errorMessage: classified.message, workerId: null, lockedAt: null, heartbeatAt: null, leaseExpiresAt: null })
     await setTaskStatus(id, 'failed', 100, classified.message)
-    console.error(`[worker] generation ${id} failed: ${classified.message}`)
+    logCaughtError(`worker generation ${id}`, error)
   } finally {
     clearInterval(heartbeat)
     await releaseLock(id, token)
@@ -98,7 +104,7 @@ async function consume(index: number, clients: Redis[]) {
       if (id) await runTask(id, consumerId)
       else console.error('[worker] discarded malformed queue entry')
     } catch (error) {
-      console.error(`[worker] consumer ${index}: ${error instanceof Error ? error.message : String(error)}`)
+      logCaughtError(`worker consumer ${index}`, error)
       if (!stopping) await delay(2000)
     }
   }
@@ -115,7 +121,7 @@ async function main() {
   const recovery = setInterval(() => {
     if (recovering || stopping) return
     recovering = true
-    void recoverGenerationQueue().catch(error => console.error(`[worker] recovery: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { recovering = false })
+    void recoverGenerationQueue().catch(error => logCaughtError('worker recovery', error)).finally(() => { recovering = false })
   }, 60_000)
 
   console.info(`[worker] ${workerName} started with concurrency ${config.workerConcurrency}`)
@@ -134,6 +140,6 @@ async function main() {
 }
 
 void main().catch((error) => {
-  console.error(`[worker] startup failed: ${error instanceof Error ? error.message : String(error)}`)
+  logCaughtError('worker startup', error)
   process.exit(1)
 })

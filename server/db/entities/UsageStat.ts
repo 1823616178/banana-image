@@ -1,4 +1,5 @@
-import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm'
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm'
+import { CreatedAt, UpdatedAt } from '#server/db/columns'
 
 const numericTransformer = { to: (value: number) => value, from: (value: string | null) => value === null ? 0 : Number(value) }
 
@@ -26,9 +27,9 @@ export class UsageStat {
   @Column({ type: 'decimal', precision: 10, scale: 4, default: 0 })
   costUsd!: string
 
-  @CreateDateColumn({ type: 'datetime', precision: 3 })
+  @CreatedAt()
   createdAt!: Date
 
-  @UpdateDateColumn({ type: 'datetime', precision: 3 })
+  @UpdatedAt()
   updatedAt!: Date
 }

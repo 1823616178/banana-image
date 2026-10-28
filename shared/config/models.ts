@@ -19,7 +19,7 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     description: '默认主力模型，支持多轮编辑',
     location: 'global',
     maxReferenceImages: 14,
-    prices: { '1K': 0.034, '2K': 0.05, '4K': 0.11 },
+    prices: { '1K': 0.034, '2K': 0.05, '4K': 0.113 },
   },
   {
     id: 'gemini-3-pro-image',
@@ -27,7 +27,7 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     description: '复杂构图与文字渲染，单价需按官方页面确认',
     location: 'global',
     maxReferenceImages: 14,
-    prices: { '1K': 0, '2K': 0, '4K': 0 },
+    prices: { '1K': 0.134, '2K': 0.134, '4K': 0.24 },
   },
   {
     id: 'gemini-3.1-flash-image',
@@ -35,7 +35,7 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     description: '上一代主力模型，单价需按官方页面确认',
     location: 'global',
     maxReferenceImages: 14,
-    prices: { '1K': 0, '2K': 0, '4K': 0 },
+    prices: { '1K': 0.067, '2K': 0.101, '4K': 0.15 },
   },
   {
     id: 'gemini-3.1-flash-lite-image',
@@ -43,7 +43,7 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     description: 'Vertex 可用性与单价需实测',
     location: 'global',
     maxReferenceImages: 14,
-    prices: { '1K': 0, '2K': 0, '4K': 0 },
+    prices: { '1K': 0.034, '2K': 0, '4K': 0 },
   },
   {
     id: 'gemini-2.5-flash-image',
@@ -51,6 +51,6 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     description: '旧版兜底模型，单价需按官方页面确认',
     location: 'global',
     maxReferenceImages: 14,
-    prices: { '1K': 0, '2K': 0, '4K': 0 },
+    prices: { '1K': 0.039, '2K': 0, '4K': 0 },
   },
 ]

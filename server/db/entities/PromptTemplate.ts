@@ -1,4 +1,5 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm'
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm'
+import { CreatedAt, UpdatedAt } from '#server/db/columns'
 
 @Entity('prompt_templates')
 export class PromptTemplate {
@@ -14,9 +15,9 @@ export class PromptTemplate {
   @Column({ type: 'int', unsigned: true, default: 0 })
   useCount!: number
 
-  @CreateDateColumn({ type: 'datetime', precision: 3 })
+  @CreatedAt()
   createdAt!: Date
 
-  @UpdateDateColumn({ type: 'datetime', precision: 3 })
+  @UpdatedAt()
   updatedAt!: Date
 }

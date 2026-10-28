@@ -3,7 +3,7 @@ import { initializeDatabase } from '#server/db/data-source'
 import { connectRedis } from '#server/services/redis'
 import { checkVertexConnection } from '#server/services/vertex'
 import { withTimeout } from '#server/utils/async'
-import { errorMessage } from '#server/utils/errors'
+import { errorMessage, logCaughtError } from '#server/utils/errors'
 import { respond } from '#server/utils/response'
 
 async function check(action: () => Promise<unknown>): Promise<HealthCheck> {
@@ -12,6 +12,7 @@ async function check(action: () => Promise<unknown>): Promise<HealthCheck> {
     await withTimeout(Promise.resolve(action()), 5000, '连接检查超时')
     return { status: 'ok', message: '连接正常', latencyMs: Math.round(performance.now() - startedAt) }
   } catch (error) {
+    logCaughtError('health', error)
     return { status: 'error', message: errorMessage(error).slice(0, 300), latencyMs: Math.round(performance.now() - startedAt) }
   }
 }

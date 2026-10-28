@@ -1,4 +1,5 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm'
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm'
+import { CreatedAt, UpdatedAt } from '#server/db/columns'
 
 @Entity('style_presets')
 export class StylePreset {
@@ -20,9 +21,9 @@ export class StylePreset {
   @Column({ type: 'boolean', default: true })
   enabled!: boolean
 
-  @CreateDateColumn({ type: 'datetime', precision: 3 })
+  @CreatedAt()
   createdAt!: Date
 
-  @UpdateDateColumn({ type: 'datetime', precision: 3 })
+  @UpdatedAt()
   updatedAt!: Date
 }

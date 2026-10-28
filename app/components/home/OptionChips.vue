@@ -3,6 +3,7 @@ export interface ChipOption {
   value: string | number
   label: string
   hint?: string
+  caption?: string
 }
 
 const props = defineProps<{
@@ -32,7 +33,10 @@ const selected = (value: string | number) => String(value) === String(props.mode
         :title="option.hint"
         :aria-pressed="selected(option.value)"
         @click="emit('update:modelValue', option.value)"
-      >{{ option.label }}</button>
+      >
+        <span>{{ option.label }}</span>
+        <span v-if="option.caption" class="container_home_options_side_price">{{ option.caption }}</span>
+      </button>
     </div>
   </fieldset>
 </template>
@@ -61,8 +65,19 @@ const selected = (value: string | number) => String(value) === String(props.mode
 
 .container_home_options_side_chip {
   @include paint-chip;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   min-height: 34px;
   padding: 5px 12px;
   font-size: 13px;
+  line-height: 1.2;
+}
+
+.container_home_options_side_price {
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 700;
 }
 </style>

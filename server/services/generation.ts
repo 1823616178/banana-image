@@ -128,7 +128,7 @@ export async function createGeneration(input: CreateGenerationInput) {
     await checkDailyBudget(Number(settingValue(settings, 'dailyBudgetUsd', 0)), estimated)
   } catch (error) {
     if (error instanceof AppError) throw error
-    throw new AppError('QUEUE_UNAVAILABLE', 'Redis 未连接，暂时无法提交生成任务', 503)
+    throw new AppError('QUEUE_UNAVAILABLE', 'Redis 未连接，暂时无法提交生成任务', 503, undefined, { cause: error })
   }
 
   const generation = source.getRepository(Generation).create({
@@ -149,9 +149,9 @@ export async function createGeneration(input: CreateGenerationInput) {
 
   try {
     await enqueueGeneration(generation.id)
-  } catch {
+  } catch (error) {
     await source.getRepository(Generation).update({ id: generation.id }, { status: 'failed', errorCode: 'QUEUE_UNAVAILABLE', errorMessage: '任务写入 Redis 队列失败' })
-    throw new AppError('QUEUE_UNAVAILABLE', '任务写入队列失败，请检查 Redis 连接', 503)
+    throw new AppError('QUEUE_UNAVAILABLE', '任务写入队列失败，请检查 Redis 连接', 503, undefined, { cause: error })
   }
   return { id: generation.id }
 }

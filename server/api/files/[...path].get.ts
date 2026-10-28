@@ -1,5 +1,5 @@
 import { readStoredImage } from '#server/services/storage'
-import { AppError, errorMessage } from '#server/utils/errors'
+import { AppError, errorMessage, logCaughtError } from '#server/utils/errors'
 
 const mimeTypes: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
 
@@ -15,6 +15,7 @@ export default defineEventHandler(async (event) => {
     setHeader(event, 'X-Content-Type-Options', 'nosniff')
     return file.data
   } catch (error) {
+    logCaughtError('files', error)
     const appError = error instanceof AppError ? error : new AppError('FILE_NOT_FOUND', '文件不存在或无法读取', 404)
     setResponseStatus(event, appError.statusCode)
     return { code: appError.code, message: appError.message || errorMessage(error) }
