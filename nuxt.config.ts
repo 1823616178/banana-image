@@ -38,6 +38,11 @@ export default defineNuxtConfig({
     pageTransition: { name: 'page', mode: 'out-in' },
   },
   css: ['~/assets/scss/main.scss'],
+  hooks: {
+    'app:resolve'(app) {
+      app.plugins = app.plugins.filter(plugin => !plugin.src.includes('check-if-page-unused'))
+    },
+  },
   devServer: {
     host: process.env.APP_HOST || '127.0.0.1',
     port: Number(process.env.APP_PORT || 3000),

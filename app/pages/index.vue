@@ -282,7 +282,7 @@ onUnmounted(() => {
           <span v-if="activeGeneration" class="container_home_result_center_status" :data-status="activeGeneration.status">{{ activeGeneration.status }}</span>
         </header>
 
-        <HomeBrushLoading v-if="isGenerating" />
+        <CommonBrushLoading v-if="isGenerating" />
         <div v-else-if="activeGeneration?.images.length" class="container_home_result_center_grid">
           <article v-for="image in activeGeneration.images" :key="image.id" class="container_home_result_center_item">
             <NuxtLink class="container_home_result_center_image" :to="`/image/${image.id}`"><img :src="image.thumbUrl" :alt="image.prompt ?? 'AI 生成画作'" loading="lazy"></NuxtLink>
