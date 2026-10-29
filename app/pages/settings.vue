@@ -8,7 +8,7 @@ const api = useApi()
 const toast = useToast()
 const { user } = useAuth()
 const isAdmin = computed(() => user.value?.role === 'admin')
-const pricingDraft = ref<Record<string, Record<'1K' | '2K' | '4K', number>>>({})
+const pricingDraft = ref<Record<string, Record<'1K' | '2K' | '4K', number | ''>>>({})
 const range = ref<'7d' | '30d' | '90d'>('30d')
 const saving = ref(false)
 const checking = ref(false)
@@ -41,13 +41,20 @@ watch(settings, (value) => {
     creditGrantUsd: value.creditGrantUsd,
     allowRegistration: value.allowRegistration,
   })
-  pricingDraft.value = Object.fromEntries(Object.entries(value.pricing).map(([id, prices]) => [id, { '1K': prices['1K'] ?? 0, '2K': prices['2K'] ?? 0, '4K': prices['4K'] ?? 0 }]))
 }, { immediate: true })
+
+// 价格覆盖草稿：留空表示使用官方价格（或待确认）。
+watch([settings, models], ([value, list]) => {
+  if (!value) return
+  const ids = new Set([...(list ?? []).map(item => item.id), ...Object.keys(value.pricing)])
+  pricingDraft.value = Object.fromEntries([...ids].map(id => [id, { '1K': value.pricing[id]?.['1K'] ?? '', '2K': value.pricing[id]?.['2K'] ?? '', '4K': value.pricing[id]?.['4K'] ?? '' }]))
+}, { immediate: true })
+const modelById = (id: string) => models.value?.find(item => item.id === id)
 
 const maxDayCost = computed(() => Math.max(0.0001, ...(stats.value?.days.map(day => day.costUsd) ?? [0])))
 const maxDayImages = computed(() => Math.max(1, ...(stats.value?.days.map(day => day.images) ?? [0])))
 const creditLeft = computed(() => stats.value && stats.value.creditGrantUsd > 0 ? stats.value.creditGrantUsd - stats.value.monthCostUsd : null)
-const selectedPrice = computed(() => models.value?.find(item => item.id === form.model)?.prices[form.imageSize] ?? 0)
+const selectedPrice = computed(() => models.value?.find(item => item.id === form.model)?.prices[form.imageSize] ?? null)
 const money = (value: number) => `$${value.toFixed(value >= 100 ? 2 : 4)}`
 
 async function save() {
@@ -151,7 +158,7 @@ async function changePassword() {
         <template v-else>
           <label class="container_settings_form_item_label">默认模型
             <select v-model="form.model" class="container_settings_form_main_model">
-              <option v-for="item in models ?? []" :key="item.id" :value="item.id">{{ item.name }}（{{ item.id }}）</option>
+              <option v-for="item in models ?? []" :key="item.id" :value="item.id">{{ item.name }}（{{ item.id }}）· {{ form.imageSize }} {{ formatImagePrice(item.prices[form.imageSize]) }}</option>
             </select>
           </label>
           <div class="container_settings_form_item_row">
@@ -165,7 +172,26 @@ async function changePassword() {
               <select v-model.number="form.count" class="container_settings_form_item_select"><option v-for="item in [1, 2, 3, 4]" :key="item" :value="item">{{ item }}</option></select>
             </label>
           </div>
-          <p class="container_settings_stats_main_note">当前组合单价：{{ selectedPrice > 0 ? `$${selectedPrice.toFixed(3)} / 张` : '未标价' }}</p>
+          <p class="container_settings_stats_main_note">当前组合单价：{{ formatImagePrice(selectedPrice) }}</p>
+
+          <h2 class="container_settings_section_main_title">模型价格 <small>（Vertex AI 官方价，Global 区域 Standard 档{{ isAdmin ? '；填写数字可覆盖，留空用官方价' : '' }}）</small></h2>
+          <table class="container_settings_form_main_pricing">
+            <thead><tr><th>模型（USD/张）</th><th>1K</th><th>2K</th><th>4K</th><th>按 token 计价（USD/百万 tokens）</th></tr></thead>
+            <tbody>
+              <tr v-for="(prices, id) in pricingDraft" :key="id">
+                <td>{{ modelById(id)?.name ?? id }}<br><small>{{ id }}</small></td>
+                <td v-for="size in (['1K', '2K', '4K'] as const)" :key="size">
+                  <input v-if="isAdmin" v-model="prices[size]" class="container_settings_form_item_input" type="number" min="0" max="100" step="0.001" :placeholder="modelById(id)?.officialPrices[size]?.toString() ?? '待确认'" :aria-label="`${id} ${size} 单价`">
+                  <span>{{ formatImagePrice(modelById(id)?.prices[size]) }}</span>
+                </td>
+                <td>
+                  <template v-if="modelById(id)?.tokenPrices">输入 {{ formatTokenPrice(modelById(id)?.tokenPrices?.inputPerMillion) }}<br>文本输出 {{ formatTokenPrice(modelById(id)?.tokenPrices?.textOutputPerMillion) }}<br>图片输出 {{ formatTokenPrice(modelById(id)?.tokenPrices?.imageOutputPerMillion) }}</template>
+                  <template v-else>待确认</template>
+                  <br><a v-if="modelById(id)?.priceSource" :href="modelById(id)?.priceSource ?? undefined" target="_blank" rel="noopener">官方来源（{{ modelById(id)?.priceCheckedAt }} 核对）</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
 
           <h2 class="container_settings_section_main_title">共享限额 <small>（所有账号共用{{ isAdmin ? '' : '，仅管理员可修改' }}）</small></h2>
           <fieldset class="container_settings_form_main_shared" :disabled="!isAdmin">
@@ -182,15 +208,6 @@ async function changePassword() {
           </div>
           <template v-if="isAdmin">
             <label class="container_settings_form_item_check"><input v-model="form.allowRegistration" type="checkbox" :disabled="settings?.registrationForcedByEnv"> 开放新用户注册<span v-if="settings?.registrationForcedByEnv">（.env 中 ALLOW_REGISTRATION=true，已强制开放）</span></label>
-            <table class="container_settings_form_main_pricing">
-              <thead><tr><th>模型单价（USD/张）</th><th>1K</th><th>2K</th><th>4K</th></tr></thead>
-              <tbody>
-                <tr v-for="(prices, id) in pricingDraft" :key="id">
-                  <td>{{ id }}</td>
-                  <td v-for="size in (['1K', '2K', '4K'] as const)" :key="size"><input v-model.number="prices[size]" class="container_settings_form_item_input" type="number" min="0" max="100" step="0.001" :aria-label="`${id} ${size} 单价`"></td>
-                </tr>
-              </tbody>
-            </table>
           </template>
           </fieldset>
           <CommonPaintButton type="submit" :loading="saving">保存设置</CommonPaintButton>
@@ -199,9 +216,9 @@ async function changePassword() {
 
       <section class="container_settings_health_main_panel">
         <h2 class="container_settings_section_main_title">连接测试</h2>
-        <CommonPaintButton variant="secondary" :loading="checking" @click="checkHealth">检测 MySQL / Redis / Vertex</CommonPaintButton>
+        <CommonPaintButton variant="secondary" :loading="checking" @click="checkHealth">检测 MySQL / Redis / Vertex / FTP</CommonPaintButton>
         <ul v-if="health" class="container_settings_health_main_list">
-          <li v-for="(item, key) in health" :key="key" class="container_settings_health_item_row" :data-status="item.status"><strong>{{ key }}</strong> {{ item.status === 'ok' ? '正常' : '异常' }} · {{ item.latencyMs }}ms<span v-if="item.status !== 'ok'"> · {{ item.message }}</span></li>
+          <li v-for="(item, key) in health" :key="key" class="container_settings_health_item_row" :data-status="item.status"><strong>{{ key }}</strong> {{ item.status === 'ok' ? '正常' : item.status === 'disabled' ? '未启用' : '异常' }}<template v-if="item.status !== 'disabled'"> · {{ item.latencyMs }}ms</template><span v-if="item.status !== 'ok'"> · {{ item.message }}</span></li>
         </ul>
       </section>
 

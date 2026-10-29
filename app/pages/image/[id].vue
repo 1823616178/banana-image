@@ -129,7 +129,7 @@ async function copyPrompt() {
         </div>
 
         <div class="container_detail_actions_side_group">
-          <a class="container_detail_actions_side_download" :href="image.url" :download="`banana-image-${image.id}`">下载原图</a>
+          <a class="container_detail_actions_side_download" :href="`${image.url}?download=1`" :download="`banana-image-${image.id}`">下载原图</a>
           <CommonPaintButton variant="secondary" :loading="busy === 'favorite'" @click="toggleFavorite">{{ image.isFavorite ? '★ 已收藏' : '☆ 收藏' }}</CommonPaintButton>
           <CommonPaintButton v-if="image.generationId" class="container_detail_actions_side_regenerate" :loading="busy === 'regenerate'" @click="regenerate">再次生成</CommonPaintButton>
           <CommonPaintButton class="container_detail_actions_side_edit" variant="secondary" @click="navigateTo({ path: '/', query: { ref: image.id } })">以此编辑</CommonPaintButton>

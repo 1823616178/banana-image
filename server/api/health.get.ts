@@ -1,6 +1,8 @@
 import type { HealthCheck, HealthDto } from '#shared/types/api'
 import { initializeDatabase } from '#server/db/data-source'
 import { connectRedis } from '#server/services/redis'
+import { checkFtpConnection } from '#server/services/ftp'
+import { getServerConfig } from '#server/utils/config'
 import { checkVertexConnection } from '#server/services/vertex'
 import { withTimeout } from '#server/utils/async'
 import { errorMessage, logCaughtError } from '#server/utils/errors'
@@ -18,10 +20,12 @@ async function check(action: () => Promise<unknown>): Promise<HealthCheck> {
 }
 
 export default defineEventHandler(event => respond<HealthDto>(event, async () => {
-  const [database, redis, vertex] = await Promise.all([
+  const ftpEnabled = getServerConfig().ftp.enabled
+  const [database, redis, vertex, ftp] = await Promise.all([
     check(async () => (await initializeDatabase()).query('SELECT 1')),
     check(async () => (await connectRedis()).ping()),
     check(checkVertexConnection),
+    ftpEnabled ? check(checkFtpConnection) : Promise.resolve<HealthCheck>({ status: 'disabled', message: '未配置 FTP_HOST', latencyMs: 0 }),
   ])
-  return { database, redis, vertex }
+  return { database, redis, vertex, ftp }
 }))

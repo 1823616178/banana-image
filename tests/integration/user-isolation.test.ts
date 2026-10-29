@@ -146,7 +146,7 @@ suite('登录与按用户隔离（MySQL）', () => {
     await expectNotFound(() => modules.images.deleteImage(aliceImageId, bob.id))
     await expectNotFound(() => modules.images.regenerateFromImage(aliceImageId, bob.id))
     await expectNotFound(() => modules.images.assertFileOwner(aliceImagePath, bob.id))
-    await expect(modules.images.assertFileOwner(aliceImagePath, alice.id)).resolves.toBeUndefined()
+    await expect(modules.images.assertFileOwner(aliceImagePath, alice.id)).resolves.toMatchObject({ storage: 'local', isOriginal: true })
 
     await modules.images.setFavorite(aliceImageId, alice.id, true)
     expect((await modules.images.listImages(alice.id, { favorite: true, sort: 'newest', page: 1, size: 24 })).total).toBe(1)
@@ -181,7 +181,10 @@ suite('登录与按用户隔离（MySQL）', () => {
     const updated = await modules.userSettings.updateUserSettings(alice.id, { dailyBudgetUsd: 5, pricing: { 'gemini-nano-banana-2.1': { '1K': 0.05 } } }, 'admin')
     expect(updated.dailyBudgetUsd).toBe(5)
     expect(updated.pricing['gemini-nano-banana-2.1']?.['1K']).toBe(0.05)
-    expect(updated.pricing['gemini-nano-banana-2.1']?.['2K']).toBe(0.05)
+    // 未覆盖的分辨率不写入设置，实际单价回落到官方价格（2K = $0.05）
+    expect(updated.pricing['gemini-nano-banana-2.1']?.['2K']).toBeUndefined()
+    const effective = (await modules.userSettings.listModels()).find(item => item.id === 'gemini-nano-banana-2.1')
+    expect(effective?.prices).toEqual({ '1K': 0.05, '2K': 0.05, '4K': 0.113 })
     await expect(modules.userSettings.updateUserSettings(alice.id, { pricing: { 'no-such-model': { '1K': 1 } } }, 'admin')).rejects.toMatchObject({ statusCode: 400 })
   })
 

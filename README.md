@@ -50,4 +50,15 @@ npm run worker
 node .output/server/index.mjs
 ```
 
-生产环境应分别守护 Web 与 Worker 进程，并将 `DB_SYNCHRONIZE` 设为 `false`；关闭同步后需先执行 `docs/migrations/001-auth-and-ownership.sql` 建立登录相关表和字段，再执行 `docs/migrations/002-admin-and-library.sql`。图片写入 `storage/`，不会打包进前端静态资源。
+生产环境应分别守护 Web 与 Worker 进程，并将 `DB_SYNCHRONIZE` 设为 `false`；关闭同步后需先执行 `docs/migrations/001-auth-and-ownership.sql` 建立登录相关表和字段，再执行 `docs/migrations/002-admin-and-library.sql`。图片默认写入 `storage/`，不会打包进前端静态资源。
+
+## FTP 主存储
+
+在 `.env` 中配置 `FTP_HOST`、`FTP_PORT`、`FTP_USER`、`FTP_PASSWORD`、`FTP_DIR`（如 `/banana`）后，FTP 成为图片主存储：
+
+- 上传的参考图与生成图（原图 + 缩略图）先上传到 FTP，成功后才写入数据库、任务才标记完成；失败自动重试 3 次，并返回具体错误（无法连接、登录失败等）。
+- 数据库 `images.storage` 记录存储位置（`ftp` / `local`），`filePath`、`thumbPath` 即 FTP_DIR 下的相对路径。
+- 浏览器通过 `/api/files/...` 服务端代理读取（校验登录与归属，FTP 凭据不外泄），`?download=1` 以附件下载，支持 Range。
+- Worker 与 Vertex 参考图输入同样从 FTP 读取。服务端使用 `FTP_POOL_SIZE` 个连接的连接池；`storage/.ftp-cache` 为按 `FTP_CACHE_MAX_MB` 限制大小的本地缓存，FTP 才是唯一可信来源。
+- 旧的本地图片可执行 `npm run storage:migrate-ftp` 上传到 FTP 并更新数据库（不删除本地文件，可重复执行）。关闭数据库同步的环境需先执行 `docs/migrations/003-ftp-storage.sql`。
+- 设置页“检测 MySQL / Redis / Vertex / FTP”可检查 FTP 连接。

@@ -129,7 +129,7 @@ export async function deleteImage(id: string, userId: string) {
   const source = await initializeDatabase()
   const image = await findImage(id, userId)
   await source.getRepository(Image).softDelete({ id: image.id, userId })
-  await deleteStoredFiles([image.filePath, image.thumbPath])
+  await deleteStoredFiles([image.filePath, image.thumbPath], image.storage)
   await clearUserGalleryCache(userId)
   return { id }
 }
@@ -159,9 +159,10 @@ export async function regenerateFromImage(id: string, userId: string) {
 export async function assertFileOwner(relativePath: string, userId: string) {
   const source = await initializeDatabase()
   const image = await source.getRepository(Image).createQueryBuilder('image')
-    .select(['image.id'])
+    .select(['image.id', 'image.storage', 'image.filePath'])
     .where('image.userId = :userId', { userId })
     .andWhere('(image.filePath = :path OR image.thumbPath = :path)', { path: relativePath })
     .getOne()
   if (!image) throw new AppError('FILE_NOT_FOUND', '文件不存在', 404)
+  return { storage: image.storage, isOriginal: image.filePath === relativePath }
 }

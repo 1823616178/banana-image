@@ -1,3 +1,4 @@
+import { effectivePrice } from '#shared/config/models'
 import type { ImageSize } from '#shared/types/api'
 
 export interface ModelPricing {
@@ -11,7 +12,7 @@ export interface ModelPricing {
 export type PricingTable = Record<string, ModelPricing>
 
 export function estimateImageCost(model: string, imageSize: ImageSize, count: number, pricing: PricingTable) {
-  const unit = pricing[model]?.[imageSize] ?? 0
+  const unit = effectivePrice(model, imageSize, pricing) ?? 0
   return Number((unit * count).toFixed(4))
 }
 

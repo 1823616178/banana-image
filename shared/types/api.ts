@@ -58,7 +58,7 @@ export interface GenerationDto {
 }
 
 export interface HealthCheck {
-  status: 'ok' | 'error'
+  status: 'ok' | 'error' | 'disabled'
   message: string
   latencyMs: number
 }
@@ -67,6 +67,7 @@ export interface HealthDto {
   database: HealthCheck
   redis: HealthCheck
   vertex: HealthCheck
+  ftp: HealthCheck
 }
 
 export type UserRole = 'admin' | 'user'
@@ -109,7 +110,13 @@ export interface ModelDto {
   name: string
   description: string
   maxReferenceImages: number
-  prices: Record<ImageSize, number>
+  /** 实际生效的每张单价（USD）；null 表示待确认 */
+  prices: Record<ImageSize, number | null>
+  /** 代码内置的官方单价 */
+  officialPrices: Record<ImageSize, number | null>
+  tokenPrices: { inputPerMillion: number, textOutputPerMillion: number, imageOutputPerMillion: number } | null
+  priceSource: string | null
+  priceCheckedAt: string | null
 }
 
 export interface UsageDayDto {
@@ -154,3 +161,23 @@ export interface AdminUserDto extends AuthUserDto {
 }
 
 export type PricingDto = Record<string, Partial<Record<ImageSize, number>>>
+
+export interface PromptRecommendationDto {
+  imageId: string
+  model: string
+  analysis: {
+    isWig: boolean
+    wigType: string
+    length: string
+    color: string
+    density: string
+    hairline: string
+    texture: string
+    summaryZh: string
+  }
+  prompts: Array<{ scene: string, labelZh: string, explanationZh: string, prompt: string }>
+  inputTokens: number
+  outputTokens: number
+  /** 按官方 token 单价估算；模型单价未知时为 null */
+  costUsd: number | null
+}

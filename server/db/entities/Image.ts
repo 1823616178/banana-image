@@ -21,6 +21,10 @@ export class Image {
   @Column({ type: 'enum', enum: ['generated', 'upload'] })
   source!: ImageSource
 
+  /** 文件所在存储：ftp（FTP_DIR 下的 key）或 local（旧版本地 storage 目录） */
+  @Column({ type: 'varchar', length: 16, default: 'local' })
+  storage!: 'local' | 'ftp'
+
   @Column({ type: 'varchar', length: 255 })
   filePath!: string
 

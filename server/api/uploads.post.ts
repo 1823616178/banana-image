@@ -20,14 +20,14 @@ export default defineEventHandler(event => respond(event, async () => {
     const repository = source.getRepository(Image)
     const existing = await repository.findOneBy({ userId: user.id, sha256: stored.sha256 })
     if (existing) {
-      await deleteStoredFiles([stored.filePath, stored.thumbPath])
+      await deleteStoredFiles([stored.filePath, stored.thumbPath], stored.storage)
       return toImageDto(existing)
     }
     await purgeDeletedDuplicate(repository, user.id, stored.sha256)
     const image = repository.create({ ...stored, userId: user.id, generationId: null, source: 'upload', isFavorite: false })
     return toImageDto(await repository.save(image))
   } catch (error) {
-    await deleteStoredFiles([stored.filePath, stored.thumbPath])
+    await deleteStoredFiles([stored.filePath, stored.thumbPath], stored.storage)
     throw error
   }
 }))

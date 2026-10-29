@@ -7,12 +7,11 @@ const api = useApi()
 const route = useRoute()
 const { data: remoteModels } = await useAsyncData('home-models', () => api<ModelDto[]>('/api/models').catch(() => null))
 const { data: userSettings } = await useAsyncData('home-settings', () => api<SettingsDto>('/api/settings').catch(() => null))
-const models = computed<ModelDto[]>(() => remoteModels.value?.length ? remoteModels.value : DEFAULT_MODELS)
+const models = computed<ModelDto[]>(() => remoteModels.value?.length ? remoteModels.value : DEFAULT_MODELS.map(item => ({ ...item, officialPrices: item.prices, tokenPrices: item.tokenPrices ?? null, priceSource: item.priceSource ?? null, priceCheckedAt: item.priceCheckedAt ?? null })))
 const references = ref<ImageDto[]>([])
 const { data: presets } = await useAsyncData('home-presets', () => api<PresetDto[]>('/api/presets').catch(() => [] as PresetDto[]))
 const { data: templates } = await useAsyncData('home-templates', () => api<TemplateDto[]>('/api/templates').catch(() => [] as TemplateDto[]))
 const stylePresetId = ref('')
-const templateChoice = ref('')
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const prompt = ref('')
@@ -29,14 +28,14 @@ let pollSerial = 0
 const modelOptions = computed(() => models.value.map(item => ({
   value: item.id,
   label: item.name,
-  hint: item.description,
-  caption: item.prices[imageSize.value] > 0 ? `$${item.prices[imageSize.value].toFixed(3)} / 张` : '未标价',
+  caption: formatImagePrice(item.prices[imageSize.value]),
+  hint: `${item.description}${item.tokenPrices ? `｜输入 $${item.tokenPrices.inputPerMillion}/百万 tokens，图片输出 $${item.tokenPrices.imageOutputPerMillion}/百万 tokens` : ''}`,
 })))
 const ratioOptions = ASPECT_RATIOS.map(value => ({ value, label: value }))
 const sizeOptions = IMAGE_SIZES.map(value => ({ value, label: value }))
 const countOptions = [1, 2, 3, 4].map(value => ({ value, label: `${value} 张` }))
 const selectedModel = computed(() => models.value.find(item => item.id === model.value) ?? models.value[0]!)
-const unitPrice = computed(() => selectedModel.value.prices[imageSize.value])
+const unitPrice = computed(() => selectedModel.value.prices[imageSize.value] ?? 0)
 const isGenerating = computed(() => requestPending.value || ['queued', 'running'].includes(activeGeneration.value?.status ?? ''))
 const resultTitle = computed(() => activeGeneration.value ? `任务 #${activeGeneration.value.id}` : '等待第一笔色彩')
 
@@ -138,12 +137,13 @@ function onPromptKeydown(event: KeyboardEvent) {
   }
 }
 
-function applyTemplate() {
-  const template = templates.value?.find(item => item.id === templateChoice.value)
-  templateChoice.value = ''
-  if (!template) return
-  prompt.value = template.content
-  void api(`/api/templates/${template.id}/use`, { method: 'POST' }).catch(() => {})
+function usePrompt(text: string, mode: 'fill' | 'append') {
+  const current = prompt.value.trim()
+  prompt.value = (mode === 'append' && current ? `${current}\n${text}` : text).slice(0, 4000)
+}
+
+function markTemplateUsed(id: string) {
+  void api(`/api/templates/${id}/use`, { method: 'POST' }).catch(() => {})
 }
 
 function addReference(image: ImageDto) {
@@ -233,14 +233,10 @@ onUnmounted(() => {
             class="container_home_prompt_top_input"
             maxlength="4000"
             rows="5"
-            placeholder="例如：暮色里的向日葵花田，远处有群青色的山，厚涂油画质感…"
+            placeholder="例如：E-commerce main photo of a model wearing the wig from the reference image, pure white background…（上传假发图可获得 AI 推荐提示词）"
             @keydown="onPromptKeydown"
           />
           <div class="container_home_prompt_top_tools">
-            <select v-if="templates?.length" v-model="templateChoice" class="container_home_prompt_top_template" aria-label="填入常用提示词" @change="applyTemplate">
-              <option value="">常用提示词…</option>
-              <option v-for="item in templates" :key="item.id" :value="item.id">{{ item.shared ? '' : '★ ' }}{{ item.title }}</option>
-            </select>
             <select v-model="stylePresetId" class="container_home_prompt_top_preset" aria-label="风格预设">
               <option value="">不使用风格预设</option>
               <option v-for="item in presets ?? []" :key="item.id" :value="item.id" :title="item.promptSuffix">{{ item.shared ? '' : '★ ' }}{{ item.name }}</option>
@@ -261,6 +257,8 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <HomePromptPanel :references="references" :templates="templates ?? []" @use="usePrompt" @template-used="markTemplateUsed" />
+
         <HomeOptionChips v-model="model" class="container_home_options_side_model" label="选择模型" :options="modelOptions" />
         <HomeOptionChips v-model="aspectRatio" label="画布比例" :options="ratioOptions" />
         <HomeOptionChips v-model="imageSize" label="分辨率" :options="sizeOptions" />
@@ -268,7 +266,7 @@ onUnmounted(() => {
 
         <div class="container_home_options_bottom_cost">
           <span class="container_home_options_bottom_label">本次预估</span>
-          <strong class="container_home_options_bottom_value">{{ unitPrice > 0 ? `$${(unitPrice * count).toFixed(3)}` : '单价待配置' }}</strong>
+          <strong class="container_home_options_bottom_value">{{ unitPrice > 0 ? `$${(unitPrice * count).toFixed(3)}` : '单价待确认' }}</strong>
           <span class="container_home_options_bottom_note">估算仅供参考，以 GCP 账单为准</span>
         </div>
 
@@ -289,7 +287,7 @@ onUnmounted(() => {
           <article v-for="image in activeGeneration.images" :key="image.id" class="container_home_result_center_item">
             <NuxtLink class="container_home_result_center_image" :to="`/image/${image.id}`"><img :src="image.thumbUrl" :alt="image.prompt ?? 'AI 生成画作'" loading="lazy"></NuxtLink>
             <footer class="container_home_result_center_actions">
-              <a class="container_home_result_center_download" :href="image.url" download>下载</a>
+              <a class="container_home_result_center_download" :href="`${image.url}?download=1`" download>下载</a>
               <NuxtLink class="container_home_result_center_detail" :to="`/image/${image.id}`">查看详情</NuxtLink>
             </footer>
           </article>

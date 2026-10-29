@@ -24,7 +24,7 @@ async function loadReferences(generation: Generation) {
   return Promise.all(generation.refImageIds.map(async (id) => {
     const record = byId.get(id)
     if (!record) throw new AppError('REFERENCE_NOT_FOUND', `参考图 ${id} 不存在或已删除`, 400)
-    const file = await readStoredImage(record.filePath)
+    const file = await readStoredImage(record.filePath, record.storage)
     return { data: file.data, mimeType: record.mimeType }
   }))
 }
@@ -35,7 +35,7 @@ async function persistGeneratedImage(generation: Generation, data: Buffer, index
   const repository = source.getRepository(Image)
   const existing = await repository.findOneBy({ userId: generation.userId ?? IsNull(), sha256: stored.sha256 })
   if (existing) {
-    await deleteStoredFiles([stored.filePath, stored.thumbPath])
+    await deleteStoredFiles([stored.filePath, stored.thumbPath], stored.storage)
     if (existing.generationId === generation.id) return existing
     throw new AppError('DUPLICATE_IMAGE', `第 ${index + 1} 张图片与已有作品重复`, 409)
   }
@@ -50,7 +50,7 @@ async function persistGeneratedImage(generation: Generation, data: Buffer, index
   try {
     return await repository.save(image)
   } catch (error) {
-    await deleteStoredFiles([stored.filePath, stored.thumbPath])
+    await deleteStoredFiles([stored.filePath, stored.thumbPath], stored.storage)
     throw error
   }
 }

@@ -1,4 +1,4 @@
-import { ASPECT_RATIOS, DEFAULT_MODELS, IMAGE_SIZES } from '#shared/config/models'
+import { ASPECT_RATIOS, DEFAULT_MODELS, IMAGE_SIZES, defaultModel, effectivePrice } from '#shared/config/models'
 import type { ModelDefinition } from '#shared/config/models'
 import type { GenerationDefaults, ImageSize, ModelDto, PricingDto, SettingsDto, UsageStatsDto, UserRole } from '#shared/types/api'
 import { initializeDatabase } from '#server/db/data-source'
@@ -13,25 +13,25 @@ export async function listModels(): Promise<ModelDto[]> {
   const settings = await getSettingsMap()
   const configured = settingValue<ModelDefinition[] | string[]>(settings, 'models', DEFAULT_MODELS)
   const pricing = settingValue<PricingTable>(settings, 'pricing', {})
-  const definitions = configured.map(item => typeof item === 'string'
-    ? DEFAULT_MODELS.find(model => model.id === item) ?? { id: item, name: item, description: '', location: 'global' as const, maxReferenceImages: 14, prices: { '1K': 0, '2K': 0, '4K': 0 } }
-    : item)
-  for (const id of getServerConfig().vertex.models) {
-    if (!definitions.some(item => item.id === id)) {
-      definitions.push(DEFAULT_MODELS.find(model => model.id === id) ?? { id, name: id, description: '', location: 'global', maxReferenceImages: 14, prices: { '1K': 0, '2K': 0, '4K': 0 } })
+  const ids = configured.map(item => typeof item === 'string' ? item : item.id)
+  for (const id of getServerConfig().vertex.models) if (!ids.includes(id)) ids.push(id)
+  const stored = new Map(configured.filter((item): item is ModelDefinition => typeof item !== 'string').map(item => [item.id, item]))
+  return ids.map((id) => {
+    // 代码内置定义（含官方价格与来源）优先，数据库里旧的模型快照只作补充。
+    const item = defaultModel(id) ?? stored.get(id)
+    const official = { '1K': defaultModel(id)?.prices['1K'] ?? null, '2K': defaultModel(id)?.prices['2K'] ?? null, '4K': defaultModel(id)?.prices['4K'] ?? null }
+    return {
+      id,
+      name: item?.name ?? id,
+      description: item?.description ?? '',
+      maxReferenceImages: item?.maxReferenceImages ?? 14,
+      prices: { '1K': effectivePrice(id, '1K', pricing), '2K': effectivePrice(id, '2K', pricing), '4K': effectivePrice(id, '4K', pricing) },
+      officialPrices: official,
+      tokenPrices: defaultModel(id)?.tokenPrices ?? null,
+      priceSource: defaultModel(id)?.priceSource ?? null,
+      priceCheckedAt: defaultModel(id)?.priceCheckedAt ?? null,
     }
-  }
-  return definitions.map(item => ({
-    id: item.id,
-    name: item.name,
-    description: item.description,
-    maxReferenceImages: item.maxReferenceImages,
-    prices: {
-      '1K': Number(pricing[item.id]?.['1K'] ?? item.prices['1K'] ?? 0),
-      '2K': Number(pricing[item.id]?.['2K'] ?? item.prices['2K'] ?? 0),
-      '4K': Number(pricing[item.id]?.['4K'] ?? item.prices['4K'] ?? 0),
-    },
-  }))
+  })
 }
 
 function normalizeDefaults(value: Partial<GenerationDefaults> | undefined, modelIds: string[]): GenerationDefaults {
@@ -57,7 +57,8 @@ export async function getUserSettings(userId: string, role: UserRole = 'user'): 
     theme: settingValue<SettingsDto['theme']>(settings, 'theme', 'system'),
     allowRegistration: settingValue<boolean>(settings, 'allowRegistration', false) === true,
     registrationForcedByEnv: process.env.ALLOW_REGISTRATION === 'true',
-    pricing: Object.fromEntries((await listModels()).map(item => [item.id, item.prices])),
+    // 仅返回管理员手动覆盖的单价（正数）；未覆盖时前端显示官方价格。
+    pricing: Object.fromEntries(Object.entries(settingValue<PricingTable>(settings, 'pricing', {})).map(([id, prices]) => [id, Object.fromEntries((['1K', '2K', '4K'] as ImageSize[]).filter(size => Number(prices?.[size]) > 0).map(size => [size, Number(prices[size])]))])),
     canManageShared: role === 'admin',
   }
 }
