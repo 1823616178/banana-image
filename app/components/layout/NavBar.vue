@@ -1,6 +1,7 @@
 <script setup lang="ts">
 const route = useRoute()
 const { label, cycleTheme } = useTheme()
+const { user, logout } = useAuth()
 
 const links = [
   { to: '/', label: '创作' },
@@ -31,10 +32,14 @@ const links = [
       >{{ link.label }}</NuxtLink>
     </nav>
 
+    <div class="container_layout_nav_right_tools">
+      <span v-if="user" class="container_layout_nav_right_user" :title="`当前用户：${user.username}`">{{ user.username }}</span>
+      <button v-if="user" class="container_layout_nav_right_logout" type="button" @click="logout">退出</button>
     <button class="container_layout_nav_right_theme" type="button" :title="`主题：${label}`" :aria-label="`当前${label}，点击切换`" @click="cycleTheme">
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3V5M12 19V21M3 12H5M19 12H21M5.64 5.64L7.05 7.05M16.95 16.95L18.36 18.36M18.36 5.64L16.95 7.05M7.05 16.95L5.64 18.36" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7" /></svg>
       <span class="container_layout_nav_right_label">{{ label }}</span>
     </button>
+    </div>
   </header>
 </template>
 
@@ -101,11 +106,39 @@ const links = [
   }
 }
 
+.container_layout_nav_right_tools {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 8px;
+}
+
+.container_layout_nav_right_user {
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--color-ink-soft);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.container_layout_nav_right_logout {
+  @include ink-focus;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-ink-soft);
+  cursor: pointer;
+  font-size: 12px;
+
+  &:hover { color: var(--color-danger); }
+}
+
 .container_layout_nav_right_theme {
   @include ink-focus;
   display: inline-flex;
   align-items: center;
-  justify-self: end;
   gap: 7px;
   padding: 8px 11px;
   border: 1px solid var(--color-border);
@@ -130,6 +163,7 @@ const links = [
   .container_layout_nav_center_link { padding: 8px 11px; font-size: 14px; }
   .container_layout_nav_right_theme { padding: 7px; }
   .container_layout_nav_right_label { display: none; }
+  .container_layout_nav_right_user { display: none; }
 }
 
 @media (max-width: 390px) {

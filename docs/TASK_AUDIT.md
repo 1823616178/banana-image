@@ -144,3 +144,50 @@ MySQL 实际报 `ECONNREFUSED 127.0.0.1:3306`；Redis 连接失败；Vertex 提�
 4. 补本地字体、笔触/画框展示、Vitest、E2E 与移动端浏览器验收；最后处理 Phase 7 可选项。
 
 本次修改范围仅为核查文档与任务状态，不包含业务代码修复。
+
+## 2026-10-29 增量：登录、多用户隔离与画廊/任务/设置
+
+本节记录 2026-10-29（北京时间）新增功能及实际验证结果，上表各项原状态保持不变，以本节为准。
+
+| 项目 | 状态 | 说明 |
+|---|---|---|
+| 登录/注册/退出/改密 | 已完成（本地验证） | `users`、`user_sessions` 两表；scrypt 加盐哈希；HttpOnly Cookie `bi_session` 30 天；首个账号可注册并接管旧数据，之后需 `ALLOW_REGISTRATION=true`；登录/注册 10 分钟 10 次限流（单进程内存）。 |
+| 任务与用户绑定 | 已完成（本地验证） | `generations.userId`、`images.userId`；任务列表/详情/取消/重试、上传、参考图、画廊、详情、收藏、删除、再次生成、`/api/files` 文件读取均按当前用户过滤；限流按用户计。 |
+| 3.1 `/api/images` 列表 | 已完成（缓存未验收） | 搜索、模型、比例、收藏、排序、分页；Redis 缓存按用户分 key，Redis 未连接时直接查库。缓存命中未在真实 Redis 上验证。 |
+| 3.2 详情/收藏/软删除/再次生成 | 已完成（本地验证） | 删除时清理磁盘文件；同哈希图片删除后可再次保存。 |
+| 3.4 settings/models/stats/presets/templates | 部分完成 | 已有 GET 接口及 `PUT /api/settings`；presets 增删改、templates 新增/删除未做。创作默认值按用户保存，预算/限流/赠金为所有账号共享。 |
+| 5.2 画廊页 | 已完成（未做浏览器视觉验收） | 瀑布流、筛选、收藏、无限滚动。 |
+| 5.3 详情页 | 已完成（未做浏览器视觉验收） | 大图、参数、下载、收藏、再次生成、以此编辑（带参考图回到创作页）、删除。 |
+| 5.4 任务页 | 已完成（未做浏览器视觉验收） | 状态筛选、分页、有进行中任务时 2.5 秒刷新、取消、重试、失败原因。 |
+| 5.5 设置页 | 已完成（未做浏览器视觉验收） | 费用卡片、每日费用柱状图（CSS）、按模型统计、默认值表单、共享限额、连接测试、改密；首页读取服务端模型与用户默认值。 |
+| 5.1 参考图上传 | 部分完成 | 首页新增上传/拖拽参考图；风格预设 UI 仍未做。 |
+| 6.2 Vitest | 部分完成 | 新增 `npm run test`：密码哈希、参数校验、登录限流单测，以及多用户隔离集成测试（需 `BI_TEST_MYSQL_URL`）。cost/rateLimit/错误分类单测仍缺。 |
+
+实际验证（Windows 本机，临时 MySQL 8.4 Docker 容器，用完已删除）：
+
+- `npm run typecheck` 退出码 0；`npm run check:classnames` 通过，检查 214 个类名；`npm run build` 成功。
+- `npx vitest run`（设置 `BI_TEST_MYSQL_URL`）：2 个文件 14 个用例全部通过。
+- 生产构建 HTTP 冒烟：未登录访问 `/api/*` 返回 401，页面 302 到 `/login?redirect=…`；首个账号以外注册返回 403；错误密码 401；登录后 Cookie 为 HttpOnly；用户 A、B 的任务列表、默认值互不可见；他人的图片 404；`/api/files/..%2F.env` 返回 400；退出后再次请求 401。Redis 未连接时提交生成返回 503（预期行为）。
+- 未验证：真实 Redis 缓存、Worker 真实出图与 userId 落库、浏览器交互与视觉效果。
+
+注意：生产构建中 `NODE_ENV=production`，`DB_SYNCHRONIZE` 不生效，需先执行 `docs/migrations/001-auth-and-ownership.sql`。
+## 2026-10-29 增量二：管理员、预设/提示词管理、6.2 单测与超时重试修复
+
+| 项目 | 状态 | 说明 |
+|---|---|---|
+| 管理员角色 | 已完成（本地验证） | `users.role`（admin/user）、`users.disabled`；首个注册账号为管理员。共享限额（每日预算、每分钟任务数、赠金）、模型单价、注册开关只有管理员可改，普通用户在设置页只读查看。 |
+| 用户管理 | 已完成（本地验证） | `GET /api/admin/users`、`PATCH /api/admin/users/:id`：改角色、停用/启用、重置密码；停用或重置密码会注销该用户全部会话；不能降级/停用自己，至少保留一个可用管理员。 |
+| 注册开关 | 已完成（本地验证） | 设置项 `allowRegistration`；`.env` 的 `ALLOW_REGISTRATION=true` 仍会强制开放。 |
+| 3.4 presets/templates 增删改 | 已完成（本地验证） | `userId` 为空的条目为共享（管理员维护），其余为个人条目，仅本人可见可改；首页新增风格预设与常用提示词选择；设置页新增两个管理面板。种子只写入一次（`seed:libraryVersion`），删除后重启不再补回。 |
+| 2.5 超时不重试 | 已修复（单测验证） | `withTimeout` 改抛 `TimeoutError`，分类器优先识别并匹配中文“超时”；重试次数提取为 `shouldRetry`（配额 3、超时 1、临时故障 2）。真实 Vertex 超时场景未验证。 |
+| 6.2 Vitest 单测 | 已完成 | `tests/unit/cost.test.ts`、`rateLimit.test.ts`（模拟 Redis）、`generationErrors.test.ts`。 |
+| 标题乱码 | 无需修改 | `nuxt.config.ts` 与构建产物中的标题经逐字节核对均为正确 UTF-8（`banana-image · 让灵感落进颜料里`）；之前看到的乱码来自 Windows 终端显示。源码中未发现其他乱码。 |
+
+实际验证（Windows 本机，临时 MySQL 8.4 容器，用完已删除）：
+
+- `npm run typecheck` 退出码 0；`npm run check:classnames` 通过，261 个类名；`npm run build` 成功。
+- `npx vitest run`（设置 `BI_TEST_MYSQL_URL`）：5 个文件 46 个用例全部通过。
+- 生产构建 HTTP 冒烟：普通用户访问 `/api/admin/users` 返回 403，管理员 200；管理员降级自己返回 400（CANNOT_DEMOTE_SELF）；普通用户修改预算或单价返回 403，修改自己的默认值 200；管理员开放注册后 `/api/auth/status` 为开放，关闭后恢复；普通用户创建共享预设/提示词返回 403，个人条目 200；停用账号后该用户会话立即失效，登录返回 403（ACCOUNT_DISABLED）。
+- 未验证：设置页与首页新面板的浏览器交互与视觉效果；真实 Redis/Vertex/Worker。
+
+生产环境（关闭同步）需在 001 之后执行 `docs/migrations/002-admin-and-library.sql`。

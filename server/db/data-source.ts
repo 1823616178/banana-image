@@ -6,6 +6,8 @@ import { PromptTemplate } from '#server/db/entities/PromptTemplate'
 import { Setting } from '#server/db/entities/Setting'
 import { StylePreset } from '#server/db/entities/StylePreset'
 import { UsageStat } from '#server/db/entities/UsageStat'
+import { User } from '#server/db/entities/User'
+import { UserSession } from '#server/db/entities/UserSession'
 import { getServerConfig } from '#server/utils/config'
 import { seedDatabase } from '#server/db/seed'
 
@@ -24,7 +26,7 @@ export const dataSource = new DataSource({
   bigNumberStrings: true,
   synchronize: config.synchronize,
   logging: config.logging,
-  entities: [Generation, Image, StylePreset, PromptTemplate, Setting, UsageStat],
+  entities: [Generation, Image, StylePreset, PromptTemplate, Setting, UsageStat, User, UserSession],
   invalidWhereValuesBehavior: { null: 'throw', undefined: 'throw' },
   extra: { connectionLimit: 10 },
 })

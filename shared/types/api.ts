@@ -68,3 +68,89 @@ export interface HealthDto {
   redis: HealthCheck
   vertex: HealthCheck
 }
+
+export type UserRole = 'admin' | 'user'
+
+export interface AuthUserDto {
+  id: string
+  username: string
+  role: UserRole
+  createdAt: string
+}
+
+export interface PageDto<T> {
+  items: T[]
+  total: number
+  page: number
+  size: number
+}
+
+export interface GenerationDefaults {
+  model: string
+  aspectRatio: AspectRatio
+  imageSize: ImageSize
+  count: number
+}
+
+export interface SettingsDto {
+  defaults: GenerationDefaults
+  dailyBudgetUsd: number
+  rateLimitPerMinute: number
+  creditGrantUsd: number
+  theme: 'system' | 'light' | 'dark'
+  allowRegistration: boolean
+  registrationForcedByEnv: boolean
+  pricing: PricingDto
+  canManageShared: boolean
+}
+
+export interface ModelDto {
+  id: string
+  name: string
+  description: string
+  maxReferenceImages: number
+  prices: Record<ImageSize, number>
+}
+
+export interface UsageDayDto {
+  date: string
+  images: number
+  costUsd: number
+}
+
+export interface UsageStatsDto {
+  rangeDays: number
+  totalImages: number
+  totalCostUsd: number
+  todayCostUsd: number
+  monthCostUsd: number
+  creditGrantUsd: number
+  days: UsageDayDto[]
+  byModel: { model: string, images: number, costUsd: number }[]
+}
+
+export interface PresetDto {
+  id: string
+  name: string
+  promptSuffix: string
+  sort: number
+  enabled: boolean
+  shared: boolean
+  editable: boolean
+}
+
+export interface TemplateDto {
+  id: string
+  title: string
+  content: string
+  useCount: number
+  shared: boolean
+  editable: boolean
+}
+
+export interface AdminUserDto extends AuthUserDto {
+  disabled: boolean
+  lastLoginAt: string | null
+}
+
+export type PricingDto = Record<string, Partial<Record<ImageSize, number>>>

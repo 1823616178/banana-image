@@ -1,20 +1,32 @@
 <script setup lang="ts">
 import { ASPECT_RATIOS, DEFAULT_MODELS, IMAGE_SIZES } from '#shared/config/models'
-import type { ApiFailure, ApiSuccess, AspectRatio, GenerationDto, ImageSize } from '#shared/types/api'
+import type { ApiFailure, AspectRatio, GenerationDto, ImageDto, ImageSize, ModelDto, PresetDto, SettingsDto, TemplateDto } from '#shared/types/api'
 
 const toast = useToast()
+const api = useApi()
+const route = useRoute()
+const { data: remoteModels } = await useAsyncData('home-models', () => api<ModelDto[]>('/api/models').catch(() => null))
+const { data: userSettings } = await useAsyncData('home-settings', () => api<SettingsDto>('/api/settings').catch(() => null))
+const models = computed<ModelDto[]>(() => remoteModels.value?.length ? remoteModels.value : DEFAULT_MODELS)
+const references = ref<ImageDto[]>([])
+const { data: presets } = await useAsyncData('home-presets', () => api<PresetDto[]>('/api/presets').catch(() => [] as PresetDto[]))
+const { data: templates } = await useAsyncData('home-templates', () => api<TemplateDto[]>('/api/templates').catch(() => [] as TemplateDto[]))
+const stylePresetId = ref('')
+const templateChoice = ref('')
+const uploading = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
 const prompt = ref('')
-const model = ref(DEFAULT_MODELS[0]!.id)
-const aspectRatio = ref<AspectRatio>('1:1')
-const imageSize = ref<ImageSize>('1K')
-const count = ref(1)
+const model = ref(userSettings.value?.defaults.model ?? DEFAULT_MODELS[0]!.id)
+const aspectRatio = ref<AspectRatio>(userSettings.value?.defaults.aspectRatio ?? '1:1')
+const imageSize = ref<ImageSize>(userSettings.value?.defaults.imageSize ?? '1K')
+const count = ref(userSettings.value?.defaults.count ?? 1)
 const requestPending = ref(false)
 const activeGeneration = ref<GenerationDto | null>(null)
 const activeGenerationKey = 'banana-active-generation'
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let pollSerial = 0
 
-const modelOptions = computed(() => DEFAULT_MODELS.map(item => ({
+const modelOptions = computed(() => models.value.map(item => ({
   value: item.id,
   label: item.name,
   hint: item.description,
@@ -23,7 +35,7 @@ const modelOptions = computed(() => DEFAULT_MODELS.map(item => ({
 const ratioOptions = ASPECT_RATIOS.map(value => ({ value, label: value }))
 const sizeOptions = IMAGE_SIZES.map(value => ({ value, label: value }))
 const countOptions = [1, 2, 3, 4].map(value => ({ value, label: `${value} 张` }))
-const selectedModel = computed(() => DEFAULT_MODELS.find(item => item.id === model.value) ?? DEFAULT_MODELS[0]!)
+const selectedModel = computed(() => models.value.find(item => item.id === model.value) ?? models.value[0]!)
 const unitPrice = computed(() => selectedModel.value.prices[imageSize.value])
 const isGenerating = computed(() => requestPending.value || ['queued', 'running'].includes(activeGeneration.value?.status ?? ''))
 const resultTitle = computed(() => activeGeneration.value ? `任务 #${activeGeneration.value.id}` : '等待第一笔色彩')
@@ -64,7 +76,7 @@ function startPolling(id: string, announce: boolean) {
 
 async function pollGeneration(id: string, announce: boolean, serial: number) {
   try {
-    const response = await $fetch<ApiSuccess<GenerationDto>>(`/api/generations/${id}`)
+    const response = { data: await api<GenerationDto>(`/api/generations/${id}`) }
     if (serial !== pollSerial) return
     rememberGeneration(id)
     showGeneration(response.data)
@@ -96,7 +108,7 @@ async function generate() {
   const previous = activeGeneration.value
   activeGeneration.value = null
   try {
-    const response = await $fetch<ApiSuccess<{ id: string }>>('/api/generations', {
+    const response = { data: await api<{ id: string }>('/api/generations', {
       method: 'POST',
       body: {
         prompt: prompt.value.trim(),
@@ -104,9 +116,10 @@ async function generate() {
         aspectRatio: aspectRatio.value,
         imageSize: imageSize.value,
         count: count.value,
-        refImageIds: [],
+        refImageIds: references.value.map(item => item.id),
+        stylePresetId: stylePresetId.value || null,
       },
-    })
+    }) }
     rememberGeneration(response.data.id)
     toast.show('任务已入队，画笔开始蘸取颜料。', 'success')
     startPolling(response.data.id, true)
@@ -125,7 +138,65 @@ function onPromptKeydown(event: KeyboardEvent) {
   }
 }
 
-onMounted(() => {
+function applyTemplate() {
+  const template = templates.value?.find(item => item.id === templateChoice.value)
+  templateChoice.value = ''
+  if (!template) return
+  prompt.value = template.content
+  void api(`/api/templates/${template.id}/use`, { method: 'POST' }).catch(() => {})
+}
+
+function addReference(image: ImageDto) {
+  if (references.value.some(item => item.id === image.id)) return
+  if (references.value.length >= selectedModel.value.maxReferenceImages) {
+    toast.show(`最多使用 ${selectedModel.value.maxReferenceImages} 张参考图`, 'info')
+    return
+  }
+  references.value.push(image)
+}
+
+function removeReference(id: string) {
+  references.value = references.value.filter(item => item.id !== id)
+}
+
+async function uploadFiles(files: FileList | File[] | null | undefined) {
+  if (!files?.length) return
+  uploading.value = true
+  try {
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('image/')) {
+        toast.show(`${file.name} 不是图片`, 'error')
+        continue
+      }
+      if (file.size > 7 * 1024 * 1024) {
+        toast.show(`${file.name} 超过 7MB`, 'error')
+        continue
+      }
+      const body = new FormData()
+      body.append('file', file)
+      addReference(await api<ImageDto>('/api/uploads', { method: 'POST', body }))
+    }
+  } catch (error) {
+    toast.show(apiErrorMessage(error), 'error')
+  } finally {
+    uploading.value = false
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+
+function onDrop(event: DragEvent) {
+  void uploadFiles(event.dataTransfer?.files)
+}
+
+onMounted(async () => {
+  const refId = typeof route.query.ref === 'string' ? route.query.ref : ''
+  if (/^\d{1,20}$/.test(refId)) {
+    try {
+      addReference(await api<ImageDto>(`/api/images/${refId}`))
+    } catch (error) {
+      toast.show(apiErrorMessage(error), 'error')
+    }
+  }
   const id = localStorage.getItem(activeGenerationKey) ?? ''
   if (/^\d{1,20}$/.test(id) && id !== '0') startPolling(id, false)
 })
@@ -165,7 +236,29 @@ onUnmounted(() => {
             placeholder="例如：暮色里的向日葵花田，远处有群青色的山，厚涂油画质感…"
             @keydown="onPromptKeydown"
           />
+          <div class="container_home_prompt_top_tools">
+            <select v-if="templates?.length" v-model="templateChoice" class="container_home_prompt_top_template" aria-label="填入常用提示词" @change="applyTemplate">
+              <option value="">常用提示词…</option>
+              <option v-for="item in templates" :key="item.id" :value="item.id">{{ item.shared ? '' : '★ ' }}{{ item.title }}</option>
+            </select>
+            <select v-model="stylePresetId" class="container_home_prompt_top_preset" aria-label="风格预设">
+              <option value="">不使用风格预设</option>
+              <option v-for="item in presets ?? []" :key="item.id" :value="item.id" :title="item.promptSuffix">{{ item.shared ? '' : '★ ' }}{{ item.name }}</option>
+            </select>
+          </div>
           <div class="container_home_prompt_top_hint"><span>Ctrl + Enter 开始作画</span><span>{{ prompt.length }} / 4000</span></div>
+        </div>
+
+        <div class="container_home_upload_side_group">
+          <p class="container_home_upload_side_label">参考图（可选，用于编辑或风格参考）</p>
+          <div class="container_home_upload_side_dropzone" :class="{ 'is-loading': uploading }" @dragover.prevent @drop.prevent="onDrop">
+            <div v-for="item in references" :key="item.id" class="container_home_upload_side_thumb">
+              <img :src="item.thumbUrl" alt="参考图">
+              <button class="container_home_upload_side_remove" type="button" aria-label="移除参考图" @click="removeReference(item.id)">×</button>
+            </div>
+            <button class="container_home_upload_side_add" type="button" :disabled="uploading" @click="fileInput?.click()">{{ uploading ? '上传中…' : '+ 添加' }}</button>
+            <input ref="fileInput" class="container_home_upload_side_file" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="uploadFiles(($event.target as HTMLInputElement).files)">
+          </div>
         </div>
 
         <HomeOptionChips v-model="model" class="container_home_options_side_model" label="选择模型" :options="modelOptions" />
@@ -316,6 +409,18 @@ onUnmounted(() => {
 .container_home_result_center_actions { display: flex; justify-content: space-between; padding: 12px 15px; font-size: 13px; }
 .container_home_result_center_download,
 .container_home_result_center_detail { @include ink-focus; color: var(--color-primary); }
+
+.container_home_prompt_top_tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.container_home_prompt_top_template,
+.container_home_prompt_top_preset { @include ink-focus; flex: 1 1 140px; min-height: 34px; padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-paper); color: var(--color-ink); font-size: 13px; }
+.container_home_upload_side_group { display: grid; gap: 8px; }
+.container_home_upload_side_label { margin: 0; color: var(--color-ink-soft); font-size: 13px; font-weight: 700; letter-spacing: 0.08em; }
+.container_home_upload_side_dropzone { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px dashed var(--color-border); border-radius: 12px; &.is-loading { opacity: .7; } }
+.container_home_upload_side_thumb { position: relative; width: 64px; height: 64px; }
+.container_home_upload_side_thumb img { width: 100%; height: 100%; border-radius: 8px; object-fit: cover; }
+.container_home_upload_side_remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: var(--color-danger); color: #fff8ed; cursor: pointer; line-height: 20px; }
+.container_home_upload_side_add { @include ink-focus; width: 64px; height: 64px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-paper); color: var(--color-ink-soft); cursor: pointer; font-size: 12px; }
+.container_home_upload_side_file { display: none; }
 
 @media (max-width: 960px) {
   .container_home_workspace_main_grid { grid-template-columns: 320px minmax(0, 1fr); gap: 18px; }

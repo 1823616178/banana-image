@@ -3,7 +3,7 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../app/', import.meta.url))
-const allowedPages = 'layout|home|gallery|detail|tasks|settings|common'
+const allowedPages = 'layout|home|gallery|detail|tasks|settings|auth|common'
 const classPattern = new RegExp(`^container_(?:${allowedPages})_[a-z0-9]+_[a-z0-9]+_[a-z0-9]+$`)
 const violations = []
 let checked = 0

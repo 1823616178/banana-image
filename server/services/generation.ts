@@ -5,7 +5,7 @@ import type { AspectRatio, GenerationDto, GenerationStatus, ImageDto, ImageSize 
 import { initializeDatabase } from '#server/db/data-source'
 import { Generation } from '#server/db/entities/Generation'
 import { Image } from '#server/db/entities/Image'
-import { StylePreset } from '#server/db/entities/StylePreset'
+import { findUsablePreset } from '#server/services/library'
 import { estimateImageCost } from '#server/services/cost'
 import type { PricingTable } from '#server/services/cost'
 import { checkDailyBudget, enforceGenerationRate } from '#server/services/rateLimit'
@@ -17,6 +17,7 @@ import { getServerConfig } from '#server/utils/config'
 export const GENERATION_QUEUE = 'bi:queue:generation'
 
 export interface CreateGenerationInput {
+  userId: string
   prompt: string
   model: string
   aspectRatio: AspectRatio
@@ -74,17 +75,17 @@ export function toGenerationDto(generation: Generation, images: Image[]): Genera
   }
 }
 
-export async function findGeneration(id: string) {
+export async function findGeneration(id: string, userId: string) {
   const source = await initializeDatabase()
-  const generation = await source.getRepository(Generation).findOneBy({ id })
+  const generation = await source.getRepository(Generation).findOneBy({ id, userId })
   if (!generation) throw new AppError('GENERATION_NOT_FOUND', '生成任务不存在', 404)
   return generation
 }
 
-export async function getGeneration(id: string) {
+export async function getGeneration(id: string, userId: string) {
   const source = await initializeDatabase()
-  const generation = await findGeneration(id)
-  const images = await source.getRepository(Image).find({ where: { generationId: id }, order: { createdAt: 'ASC' } })
+  const generation = await findGeneration(id, userId)
+  const images = await source.getRepository(Image).find({ where: { generationId: id, userId }, order: { createdAt: 'ASC' } })
   return toGenerationDto(generation, images)
 }
 
@@ -110,13 +111,13 @@ export async function createGeneration(input: CreateGenerationInput) {
   if (!allowedModels.has(input.model)) throw new AppError('MODEL_NOT_ALLOWED', '所选模型不在可用列表中', 400)
 
   const references = input.refImageIds.length
-    ? await source.getRepository(Image).findBy({ id: In(input.refImageIds) })
+    ? await source.getRepository(Image).findBy({ id: In(input.refImageIds), userId: input.userId })
     : []
   if (references.length !== input.refImageIds.length) throw new AppError('REFERENCE_NOT_FOUND', '部分参考图不存在或已删除', 400)
 
   let finalPrompt = input.prompt
   if (input.stylePresetId) {
-    const preset = await source.getRepository(StylePreset).findOneBy({ id: input.stylePresetId, enabled: true })
+    const preset = await findUsablePreset({ id: input.userId }, input.stylePresetId)
     if (!preset) throw new AppError('PRESET_NOT_FOUND', '风格预设不存在或已停用', 400)
     finalPrompt = `${input.prompt}\n${preset.promptSuffix}`
   }
@@ -124,7 +125,7 @@ export async function createGeneration(input: CreateGenerationInput) {
   const pricing = settingValue<PricingTable>(settings, 'pricing', {})
   const estimated = estimateImageCost(input.model, input.imageSize, input.count, pricing)
   try {
-    await enforceGenerationRate(Number(settingValue(settings, 'rateLimitPerMinute', 10)))
+    await enforceGenerationRate(input.userId, Number(settingValue(settings, 'rateLimitPerMinute', 10)))
     await checkDailyBudget(Number(settingValue(settings, 'dailyBudgetUsd', 0)), estimated)
   } catch (error) {
     if (error instanceof AppError) throw error
@@ -132,6 +133,7 @@ export async function createGeneration(input: CreateGenerationInput) {
   }
 
   const generation = source.getRepository(Generation).create({
+    userId: input.userId,
     prompt: input.prompt,
     finalPrompt,
     model: input.model,
@@ -156,16 +158,16 @@ export async function createGeneration(input: CreateGenerationInput) {
   return { id: generation.id }
 }
 
-export async function listGenerations(status: GenerationStatus | undefined, page: number, size: number) {
+export async function listGenerations(userId: string, status: GenerationStatus | undefined, page: number, size: number) {
   const source = await initializeDatabase()
   const [items, total] = await source.getRepository(Generation).findAndCount({
-    where: status ? { status } : {},
+    where: status ? { userId, status } : { userId },
     order: { createdAt: 'DESC' },
     skip: (page - 1) * size,
     take: size,
   })
   const ids = items.map(item => item.id)
-  const images = ids.length ? await source.getRepository(Image).findBy({ generationId: In(ids) }) : []
+  const images = ids.length ? await source.getRepository(Image).findBy({ generationId: In(ids), userId }) : []
   return {
     items: items.map(item => toGenerationDto(item, images.filter(image => image.generationId === item.id))),
     total,
@@ -174,12 +176,13 @@ export async function listGenerations(status: GenerationStatus | undefined, page
   }
 }
 
-export async function retryGeneration(id: string) {
-  const original = await findGeneration(id)
+export async function retryGeneration(id: string, userId: string) {
+  const original = await findGeneration(id, userId)
   if (!['failed', 'partial', 'canceled'].includes(original.status)) {
     throw new AppError('GENERATION_NOT_RETRYABLE', '只有失败、部分成功或已取消的任务可以重试', 409)
   }
   return createGeneration({
+    userId,
     prompt: original.prompt,
     model: original.model,
     aspectRatio: original.aspectRatio,
@@ -191,11 +194,11 @@ export async function retryGeneration(id: string) {
   })
 }
 
-export async function cancelGeneration(id: string) {
-  const generation = await findGeneration(id)
+export async function cancelGeneration(id: string, userId: string) {
+  const generation = await findGeneration(id, userId)
   if (generation.status !== 'queued') throw new AppError('GENERATION_NOT_CANCELABLE', '只有排队中的任务可以取消', 409)
   const source = await initializeDatabase()
-  await source.getRepository(Generation).update({ id, status: 'queued' }, { status: 'canceled', cancelRequestedAt: new Date() })
+  await source.getRepository(Generation).update({ id, userId, status: 'queued' }, { status: 'canceled', cancelRequestedAt: new Date() })
   await getRedis().lrem(GENERATION_QUEUE, 0, JSON.stringify({ generationId: id }))
   await setTaskStatus(id, 'canceled', 0)
   return { id, status: 'canceled' as const }

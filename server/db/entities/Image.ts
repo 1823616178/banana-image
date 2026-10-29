@@ -6,9 +6,14 @@ import type { ImageSource } from '#shared/types/api'
 @Index('idx_images_source_favorite_created', ['source', 'isFavorite', 'createdAt'])
 @Index('idx_images_generation', ['generationId'])
 @Index('idx_images_favorite', ['isFavorite'])
+@Index('idx_images_user_created', ['userId', 'createdAt'])
+@Index('uq_images_user_sha256', ['userId', 'sha256'], { unique: true })
 export class Image {
   @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true })
   id!: string
+
+  @Column({ type: 'bigint', unsigned: true, nullable: true })
+  userId!: string | null
 
   @Column({ type: 'bigint', unsigned: true, nullable: true })
   generationId!: string | null
@@ -34,7 +39,6 @@ export class Image {
   @Column({ type: 'int', unsigned: true })
   bytes!: number
 
-  @Index({ unique: true })
   @Column({ type: 'char', length: 64 })
   sha256!: string
 

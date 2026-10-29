@@ -1,4 +1,5 @@
 import type { DataSource } from 'typeorm'
+import { IsNull } from 'typeorm'
 import { DEFAULT_MODELS } from '#shared/config/models'
 import { PromptTemplate } from '#server/db/entities/PromptTemplate'
 import { Setting } from '#server/db/entities/Setting'
@@ -23,16 +24,24 @@ const settings = [
 ]
 
 export async function seedDatabase(source: DataSource) {
-  await source.createQueryBuilder().insert().into(StylePreset).values(presets.map(preset => ({ ...preset, enabled: true, coverImageId: null }))).orIgnore().execute()
-  await source.createQueryBuilder().insert().into(Setting).values(settings).orIgnore().execute()
+  // 预设与模板只在首次初始化时写入一次，管理员删除后不会在重启时被恢复。
+  const settingRepository = source.getRepository(Setting)
+  if (await settingRepository.findOneBy({ key: 'seed:libraryVersion' })) return
+  const presetRepository = source.getRepository(StylePreset)
+  for (const preset of presets) {
+    if (!await presetRepository.findOneBy({ name: preset.name, userId: IsNull() })) {
+      await presetRepository.save(presetRepository.create({ ...preset, userId: null, enabled: true, coverImageId: null }))
+    }
+  }
   const templates = [
     { title: '暮色花田', content: '暮色里的向日葵花田，远处有群青色的山，风穿过花瓣，厚涂油画质感。' },
     { title: '雨夜街巷', content: '雨后的老街，暖色灯光映在石板路上，一位撑伞的行人，电影感构图。' },
   ]
   const templateRepository = source.getRepository(PromptTemplate)
   for (const template of templates) {
-    if (!await templateRepository.findOneBy({ title: template.title })) {
-      await templateRepository.save(templateRepository.create(template))
+    if (!await templateRepository.findOneBy({ title: template.title, userId: IsNull() })) {
+      await templateRepository.save(templateRepository.create({ ...template, userId: null }))
     }
   }
+  await source.createQueryBuilder().insert().into(Setting).values({ key: 'seed:libraryVersion', value: 1 }).orIgnore().execute()
 }

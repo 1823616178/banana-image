@@ -5,9 +5,13 @@ import type { AspectRatio, GenerationStatus, ImageSize } from '#shared/types/api
 @Entity('generations')
 @Index('idx_generations_status_created', ['status', 'createdAt'])
 @Index('idx_generations_model', ['model'])
+@Index('idx_generations_user_created', ['userId', 'createdAt'])
 export class Generation {
   @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true })
   id!: string
+
+  @Column({ type: 'bigint', unsigned: true, nullable: true })
+  userId!: string | null
 
   @Column({ type: 'text' })
   prompt!: string

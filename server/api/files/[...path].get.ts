@@ -1,4 +1,6 @@
-import { readStoredImage } from '#server/services/storage'
+import { assertFileOwner } from '#server/services/images'
+import { readStoredImage, storagePath } from '#server/services/storage'
+import { requireUser } from '#server/utils/auth'
 import { AppError, errorMessage, logCaughtError } from '#server/utils/errors'
 
 const mimeTypes: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
@@ -8,6 +10,8 @@ export default defineEventHandler(async (event) => {
     const raw = getRouterParam(event, 'path')
     if (!raw) throw new AppError('INVALID_FILE_PATH', '非法文件路径', 400)
     const path = decodeURIComponent(raw)
+    storagePath(path)
+    await assertFileOwner(path, requireUser(event).id)
     const file = await readStoredImage(path)
     setHeader(event, 'Content-Type', mimeTypes[file.extension] ?? 'application/octet-stream')
     setHeader(event, 'Content-Length', file.bytes)

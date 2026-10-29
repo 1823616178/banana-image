@@ -1,3 +1,4 @@
+import { TimeoutError } from '#server/utils/async'
 import { AppError, errorMessage } from '#server/utils/errors'
 
 export interface ClassifiedGenerationError {
@@ -13,6 +14,11 @@ export function classifyGenerationError(error: unknown): ClassifiedGenerationErr
   const message = errorMessage(error)
   const normalized = `${code ?? ''} ${message}`.toLowerCase()
 
+  // 本地 withTimeout 抛出的超时（中文消息）也要走超时重试，必须先于其他规则判断。
+  if (error instanceof TimeoutError || code === 'TIMEOUT') {
+    return { code: 'VERTEX_TIMEOUT', message: 'Vertex 图像生成超时', retry: 'timeout', blocked: false }
+  }
+
   if (/(^|\D)429(\D|$)|resource_exhausted|quota|rate.limit/.test(normalized)) {
     return { code: 'QUOTA_EXCEEDED', message: 'Vertex 额度或频率受限，请稍后重试', retry: 'quota', blocked: false }
   }
@@ -22,7 +28,7 @@ export function classifyGenerationError(error: unknown): ClassifiedGenerationErr
   if (/(^|\D)404(\D|$)|not.found/.test(normalized)) {
     return { code: 'MODEL_NOT_FOUND', message: '模型 ID 或 location 不正确，请检查模型设置', retry: 'never', blocked: false }
   }
-  if (/timeout|timed.out|deadline.exceeded/.test(normalized)) {
+  if (/timeout|timed.?out|deadline.exceeded|超时/.test(normalized)) {
     return { code: 'VERTEX_TIMEOUT', message: 'Vertex 图像生成超时', retry: 'timeout', blocked: false }
   }
   if (/safety|prohibited.content|blocked/.test(normalized)) {
@@ -40,4 +46,15 @@ export function noImageError(finishReasons: string[], text: string) {
     return new AppError('CONTENT_BLOCKED', `生成被安全策略拦截（${reasons}），请修改提示词`, 422)
   }
   return new AppError('NO_IMAGE_RETURNED', text ? `模型未返回图片：${text.slice(0, 800)}` : '模型未返回图片', 502)
+}
+
+/** 各类错误允许的最大重试次数：配额 3 次、超时 1 次、临时故障 2 次，其余不重试。 */
+export const RETRY_LIMITS = { quota: 3, timeout: 1, transient: 2, never: 0 } as const
+
+export function shouldRetry(classified: Pick<ClassifiedGenerationError, 'retry'>, attempt: number) {
+  return attempt < RETRY_LIMITS[classified.retry]
+}
+
+export function retryDelayMs(attempt: number) {
+  return 2 ** attempt * 1000
 }

@@ -4,8 +4,9 @@ import { Generation } from '#server/db/entities/Generation'
 import { Image } from '#server/db/entities/Image'
 import { calculateGenerationCost, utcDay } from '#server/services/cost'
 import type { PricingTable } from '#server/services/cost'
-import { classifyGenerationError, noImageError } from '#server/services/generationErrors'
+import { classifyGenerationError, noImageError, retryDelayMs, shouldRetry } from '#server/services/generationErrors'
 import { GENERATION_QUEUE, setTaskStatus } from '#server/services/generation'
+import { purgeDeletedDuplicate } from '#server/services/images'
 import { recordDailyCost } from '#server/services/rateLimit'
 import { getRedis } from '#server/services/redis'
 import { getSettingsMap, settingValue } from '#server/services/settings'
@@ -18,7 +19,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function loadReferences(generation: Generation) {
   if (!generation.refImageIds.length) return []
   const source = await initializeDatabase()
-  const records = await source.getRepository(Image).findBy({ id: In(generation.refImageIds) })
+  const records = await source.getRepository(Image).findBy({ id: In(generation.refImageIds), userId: generation.userId ?? IsNull() })
   const byId = new Map(records.map(record => [record.id, record]))
   return Promise.all(generation.refImageIds.map(async (id) => {
     const record = byId.get(id)
@@ -32,14 +33,16 @@ async function persistGeneratedImage(generation: Generation, data: Buffer, index
   const source = await initializeDatabase()
   const stored = await saveImage(data, 'generated')
   const repository = source.getRepository(Image)
-  const existing = await repository.findOneBy({ sha256: stored.sha256 })
+  const existing = await repository.findOneBy({ userId: generation.userId ?? IsNull(), sha256: stored.sha256 })
   if (existing) {
     await deleteStoredFiles([stored.filePath, stored.thumbPath])
     if (existing.generationId === generation.id) return existing
     throw new AppError('DUPLICATE_IMAGE', `第 ${index + 1} 张图片与已有作品重复`, 409)
   }
+  if (generation.userId) await purgeDeletedDuplicate(repository, generation.userId, stored.sha256)
   const image = repository.create({
     ...stored,
+    userId: generation.userId,
     generationId: generation.id,
     source: 'generated',
     isFavorite: false,
@@ -100,12 +103,10 @@ export async function processGeneration(id: string) {
         return result
       } catch (error) {
         const classified = classifyGenerationError(error)
-        const retryable = (classified.retry === 'quota' && attempt < 3)
-          || (classified.retry === 'timeout' && attempt < 1)
-          || (classified.retry === 'transient' && attempt < 2)
+        const retryable = shouldRetry(classified, attempt)
         if (!retryable) throw new AppError(classified.code, classified.message, 502, undefined, { cause: error })
         logCaughtError(`worker generation ${generation.id} attempt ${attempt + 1} retrying`, error)
-        await delay(2 ** attempt * 1000)
+        await delay(retryDelayMs(attempt))
       }
     }
   }))

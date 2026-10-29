@@ -12,7 +12,9 @@
     "worker": "tsx --tsconfig .nuxt/tsconfig.server.json server/worker.ts",
     "dev:worker": "tsx watch --tsconfig .nuxt/tsconfig.server.json server/worker.ts",
     "probe:models": "tsx --tsconfig .nuxt/tsconfig.server.json scripts/probe-models.ts",
-    "check:classnames": "node scripts/check-classnames.mjs"
+    "check:classnames": "node scripts/check-classnames.mjs",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run check:classnames && npm run test"
   },
   "dependencies": {
     "@google/genai": "^2.31.0",
@@ -32,6 +34,7 @@
     "sass": "^1.106.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
     "vue-tsc": "^3.3.13"
   }
 }

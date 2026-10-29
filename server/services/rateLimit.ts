@@ -6,9 +6,9 @@ function minuteKey(date = new Date()) {
   return date.toISOString().slice(0, 16).replaceAll(/[-:T]/g, '')
 }
 
-export async function enforceGenerationRate(limitPerMinute: number) {
+export async function enforceGenerationRate(userId: string, limitPerMinute: number) {
   if (limitPerMinute <= 0) return
-  const key = `bi:rl:gen:${minuteKey()}`
+  const key = `bi:rl:gen:${userId}:${minuteKey()}`
   const redis = getRedis()
   const count = await redis.incr(key)
   if (count === 1) await redis.expire(key, 70)
