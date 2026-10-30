@@ -8,11 +8,9 @@ const route = useRoute()
 const { data: remoteModels } = await useAsyncData('home-models', () => api<ModelDto[]>('/api/models').catch(() => null))
 const { data: userSettings } = await useAsyncData('home-settings', () => api<SettingsDto>('/api/settings').catch(() => null))
 const models = computed<ModelDto[]>(() => remoteModels.value?.length ? remoteModels.value : DEFAULT_MODELS.map(item => ({ ...item, officialPrices: item.prices, tokenPrices: item.tokenPrices ?? null, priceSource: item.priceSource ?? null, priceCheckedAt: item.priceCheckedAt ?? null })))
-const references = ref<ImageDto[]>([])
 const { data: presets } = await useAsyncData('home-presets', () => api<PresetDto[]>('/api/presets').catch(() => [] as PresetDto[]))
 const { data: templates } = await useAsyncData('home-templates', () => api<TemplateDto[]>('/api/templates').catch(() => [] as TemplateDto[]))
 const stylePresetId = ref('')
-const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const prompt = ref('')
 const model = ref(userSettings.value?.defaults.model ?? DEFAULT_MODELS[0]!.id)
@@ -35,6 +33,18 @@ const ratioOptions = ASPECT_RATIOS.map(value => ({ value, label: value }))
 const sizeOptions = IMAGE_SIZES.map(value => ({ value, label: value }))
 const countOptions = [1, 2, 3, 4].map(value => ({ value, label: `${value} 张` }))
 const selectedModel = computed(() => models.value.find(item => item.id === model.value) ?? models.value[0]!)
+const {
+  references,
+  historyOptions,
+  uploading,
+  dragging,
+  addReference,
+  removeReference,
+  onFileChange,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+} = useReferenceUploads(() => selectedModel.value.maxReferenceImages)
 const unitPrice = computed(() => selectedModel.value.prices[imageSize.value] ?? 0)
 const isGenerating = computed(() => requestPending.value || ['queued', 'running'].includes(activeGeneration.value?.status ?? ''))
 const resultTitle = computed(() => activeGeneration.value ? `任务 #${activeGeneration.value.id}` : '等待第一笔色彩')
@@ -146,48 +156,6 @@ function markTemplateUsed(id: string) {
   void api(`/api/templates/${id}/use`, { method: 'POST' }).catch(() => {})
 }
 
-function addReference(image: ImageDto) {
-  if (references.value.some(item => item.id === image.id)) return
-  if (references.value.length >= selectedModel.value.maxReferenceImages) {
-    toast.show(`最多使用 ${selectedModel.value.maxReferenceImages} 张参考图`, 'info')
-    return
-  }
-  references.value.push(image)
-}
-
-function removeReference(id: string) {
-  references.value = references.value.filter(item => item.id !== id)
-}
-
-async function uploadFiles(files: FileList | File[] | null | undefined) {
-  if (!files?.length) return
-  uploading.value = true
-  try {
-    for (const file of Array.from(files)) {
-      if (!file.type.startsWith('image/')) {
-        toast.show(`${file.name} 不是图片`, 'error')
-        continue
-      }
-      if (file.size > 7 * 1024 * 1024) {
-        toast.show(`${file.name} 超过 7MB`, 'error')
-        continue
-      }
-      const body = new FormData()
-      body.append('file', file)
-      addReference(await api<ImageDto>('/api/uploads', { method: 'POST', body }))
-    }
-  } catch (error) {
-    toast.show(apiErrorMessage(error), 'error')
-  } finally {
-    uploading.value = false
-    if (fileInput.value) fileInput.value.value = ''
-  }
-}
-
-function onDrop(event: DragEvent) {
-  void uploadFiles(event.dataTransfer?.files)
-}
-
 onMounted(async () => {
   const refId = typeof route.query.ref === 'string' ? route.query.ref : ''
   if (/^\d{1,20}$/.test(refId)) {
@@ -246,14 +214,22 @@ onUnmounted(() => {
         </div>
 
         <div class="container_home_upload_side_group">
-          <p class="container_home_upload_side_label">参考图（可选，用于编辑或风格参考）</p>
-          <div class="container_home_upload_side_dropzone" :class="{ 'is-loading': uploading }" @dragover.prevent @drop.prevent="onDrop">
+          <p class="container_home_upload_side_label">参考图（可选，支持拖拽或 Ctrl+V 粘贴图片）</p>
+          <div v-if="historyOptions.length" class="container_home_history_top_wrap">
+            <span class="container_home_history_top_title">最近上传 · 点击复用</span>
+            <div class="container_home_history_main_list">
+              <button v-for="(item, index) in historyOptions" :key="item.id" class="container_home_history_item_btn" type="button" :style="{ animationDelay: `${index * 55}ms` }" title="添加为参考图" aria-label="添加为参考图" @click="addReference(item)">
+                <img :src="item.thumbUrl" alt="历史上传图" loading="lazy">
+              </button>
+            </div>
+          </div>
+          <div class="container_home_upload_side_dropzone" :class="{ 'is-loading': uploading, 'is-dragging': dragging }" @dragover="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
             <div v-for="item in references" :key="item.id" class="container_home_upload_side_thumb">
               <img :src="item.thumbUrl" alt="参考图">
               <button class="container_home_upload_side_remove" type="button" aria-label="移除参考图" @click="removeReference(item.id)">×</button>
             </div>
             <button class="container_home_upload_side_add" type="button" :disabled="uploading" @click="fileInput?.click()">{{ uploading ? '上传中…' : '+ 添加' }}</button>
-            <input ref="fileInput" class="container_home_upload_side_file" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="uploadFiles(($event.target as HTMLInputElement).files)">
+            <input ref="fileInput" class="container_home_upload_side_file" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="onFileChange">
           </div>
         </div>
 
@@ -413,8 +389,22 @@ onUnmounted(() => {
 .container_home_prompt_top_preset { @include ink-focus; flex: 1 1 140px; min-height: 34px; padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-paper); color: var(--color-ink); font-size: 13px; }
 .container_home_upload_side_group { display: grid; gap: 8px; }
 .container_home_upload_side_label { margin: 0; color: var(--color-ink-soft); font-size: 13px; font-weight: 700; letter-spacing: 0.08em; }
-.container_home_upload_side_dropzone { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px dashed var(--color-border); border-radius: 12px; &.is-loading { opacity: .7; } }
-.container_home_upload_side_thumb { position: relative; width: 64px; height: 64px; }
+.container_home_upload_side_dropzone { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px dashed var(--color-border); border-radius: 12px; transition: border-color 200ms ease, background-color 200ms ease, box-shadow 200ms ease; &.is-loading { opacity: .7; } &.is-dragging { border-color: var(--color-primary); background: var(--color-chip-active); box-shadow: 0 0 0 4px rgba($ultramarine, 0.12); animation: upload-drag-pulse 1.1s ease-in-out infinite; } }
+.container_home_upload_side_thumb { position: relative; width: 64px; height: 64px; animation: upload-thumb-pop 360ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.container_home_history_top_wrap { display: grid; gap: 6px; }
+.container_home_history_top_title { color: var(--color-ink-soft); font-size: 12px; }
+.container_home_history_main_list { display: flex; flex-wrap: wrap; gap: 8px; }
+.container_home_history_item_btn { @include ink-focus; width: 52px; height: 52px; padding: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-canvas); cursor: pointer; animation: upload-thumb-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both; transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease; img { width: 100%; height: 100%; object-fit: cover; transition: transform 260ms ease; } &:hover { border-color: var(--color-primary); box-shadow: 0 6px 14px rgba(59, 42, 32, 0.2); transform: translateY(-3px) scale(1.06); img { transform: scale(1.12); } } &:active { transform: scale(0.94); } }
+
+@keyframes upload-thumb-pop {
+  from { opacity: 0; transform: scale(0.5) rotate(-6deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@keyframes upload-drag-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.015); }
+}
 .container_home_upload_side_thumb img { width: 100%; height: 100%; border-radius: 8px; object-fit: cover; }
 .container_home_upload_side_remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: var(--color-danger); color: #fff8ed; cursor: pointer; line-height: 20px; }
 .container_home_upload_side_add { @include ink-focus; width: 64px; height: 64px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-paper); color: var(--color-ink-soft); cursor: pointer; font-size: 12px; }
