@@ -62,3 +62,35 @@ node .output/server/index.mjs
 - Worker 与 Vertex 参考图输入同样从 FTP 读取。服务端使用 `FTP_POOL_SIZE` 个连接的连接池；`storage/.ftp-cache` 为按 `FTP_CACHE_MAX_MB` 限制大小的本地缓存，FTP 才是唯一可信来源。
 - 旧的本地图片可执行 `npm run storage:migrate-ftp` 上传到 FTP 并更新数据库（不删除本地文件，可重复执行）。关闭数据库同步的环境需先执行 `docs/migrations/003-ftp-storage.sql`。
 - 设置页“检测 MySQL / Redis / Vertex / FTP”可检查 FTP 连接。
+
+## Ubuntu 部署（22.04 / 24.04）
+
+项目已在 Linux（Node 24）上验证过安装、类型检查、构建、测试、Web 与 Worker 启动。
+
+1. 安装 Node.js 22.19+ 或 24.11+（Ubuntu 自带 apt 版本过旧，建议用 NodeSource 或 nvm）。sharp 会自动安装 linux-x64 预编译包，无需额外编译工具。
+2. 将代码放到如 `/opt/banana-image`，执行 `npm ci`（Worker 通过 `tsx` 运行，需要保留 devDependencies，不要加 `--omit=dev`），再 `npm run build`。
+3. 编写 `.env`（建议 LF 换行，权限 `chmod 600 .env`）；`STORAGE_DIR` 建议写绝对路径，并确保运行用户对其可写（FTP 模式下用于 `.ftp-cache` 缓存）。
+4. 新数据库首次部署执行 `NODE_ENV=production npm run db:sync` 建表并写入初始数据；已有库升级执行 `docs/migrations/*.sql`。
+5. GCP 凭据：服务器上执行 `gcloud auth application-default login`，或设置 `GOOGLE_APPLICATION_CREDENTIALS=/path/key.json`。
+6. Web 进程不会自动读取 `.env`，需由 systemd `EnvironmentFile` 注入；监听地址用 `HOST`/`PORT`（或 `NITRO_HOST`/`NITRO_PORT`）。Worker 会自行读取工作目录下的 `.env`。
+
+systemd 示例（`/etc/systemd/system/banana-web.service`，Worker 同理把 `ExecStart` 换成 `/usr/bin/npm run worker`）：
+
+```ini
+[Unit]
+Description=banana-image web
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/banana-image
+EnvironmentFile=/opt/banana-image/.env
+Environment=NODE_ENV=production HOST=127.0.0.1 PORT=3000
+ExecStart=/usr/bin/node .output/server/index.mjs
+Restart=always
+User=banana
+
+[Install]
+WantedBy=multi-user.target
+```
+
+FTP 使用被动模式（EPSV/PASV），服务器防火墙需放行 FTP 服务端的 21 端口和被动端口范围。

@@ -2,6 +2,7 @@
   "name": "banana-image",
   "type": "module",
   "private": true,
+  "engines": { "node": "^22.19.0 || >=24.11.0" },
   "scripts": {
     "build": "nuxt build",
     "dev": "nuxt dev",
@@ -12,6 +13,7 @@
     "worker": "tsx --tsconfig .nuxt/tsconfig.server.json server/worker.ts",
     "dev:worker": "tsx watch --tsconfig .nuxt/tsconfig.server.json server/worker.ts",
     "storage:migrate-ftp": "tsx --tsconfig .nuxt/tsconfig.server.json scripts/migrate-storage-ftp.ts",
+    "db:sync": "tsx --tsconfig .nuxt/tsconfig.server.json scripts/db-sync.ts",
     "probe:models": "tsx --tsconfig .nuxt/tsconfig.server.json scripts/probe-models.ts",
     "check:classnames": "node scripts/check-classnames.mjs",
     "test": "vitest run",
