@@ -1,10 +1,10 @@
-import { ASPECT_RATIOS, DEFAULT_MODELS, IMAGE_SIZES, defaultModel, effectivePrice } from '#shared/config/models'
+import { DEFAULT_MODELS, defaultModel, effectivePrice, resolveModelCapabilities } from '#shared/config/models'
 import type { ModelDefinition } from '#shared/config/models'
 import type { GenerationDefaults, ImageSize, ModelDto, PricingDto, SettingsDto, UsageStatsDto, UserRole } from '#shared/types/api'
 import { initializeDatabase } from '#server/db/data-source'
 import type { PricingTable } from '#server/services/cost'
 import { getSettingsMap, settingValue, writeSetting } from '#server/services/settings'
-import { getServerConfig } from '#server/utils/config'
+import { resolveConfiguredModels } from '#server/services/modelCatalog'
 import { AppError } from '#server/utils/errors'
 
 const userDefaultsKey = (userId: string) => `user:${userId}:defaults`
@@ -13,21 +13,17 @@ export async function listModels(): Promise<ModelDto[]> {
   const settings = await getSettingsMap()
   const configured = settingValue<ModelDefinition[] | string[]>(settings, 'models', DEFAULT_MODELS)
   const pricing = settingValue<PricingTable>(settings, 'pricing', {})
-  const ids = configured.map(item => typeof item === 'string' ? item : item.id)
-  for (const id of getServerConfig().vertex.models) if (!ids.includes(id)) ids.push(id)
-  for (const id of getServerConfig().sensenova.models) if (!ids.includes(id)) ids.push(id)
-  const stored = new Map(configured.filter((item): item is ModelDefinition => typeof item !== 'string').map(item => [item.id, item]))
-  return ids.map((id) => {
+  return resolveConfiguredModels(configured).filter(model => model.enabled).map(({ id, definition: item, provider, maxReferenceImages, supportedAspectRatios, supportedImageSizes }) => {
     // 代码内置定义（含官方价格与来源）优先，数据库里旧的模型快照只作补充。
-    const item = defaultModel(id) ?? stored.get(id)
     const official = { '1K': defaultModel(id)?.prices['1K'] ?? null, '2K': defaultModel(id)?.prices['2K'] ?? null, '4K': defaultModel(id)?.prices['4K'] ?? null }
-    const provider = item?.provider ?? (id.toLowerCase().includes('sensenova') ? 'sensenova' : 'vertex')
     return {
       id,
       name: item?.name ?? id,
       description: item?.description ?? '',
       provider,
-      maxReferenceImages: item?.maxReferenceImages ?? (provider === 'sensenova' ? 0 : 14),
+      maxReferenceImages,
+      supportedAspectRatios,
+      supportedImageSizes,
       prices: { '1K': effectivePrice(id, '1K', pricing), '2K': effectivePrice(id, '2K', pricing), '4K': effectivePrice(id, '4K', pricing) },
       officialPrices: official,
       tokenPrices: defaultModel(id)?.tokenPrices ?? null,
@@ -37,23 +33,25 @@ export async function listModels(): Promise<ModelDto[]> {
   })
 }
 
-function normalizeDefaults(value: Partial<GenerationDefaults> | undefined, modelIds: string[]): GenerationDefaults {
-  const fallbackModel = modelIds[0] ?? DEFAULT_MODELS[0]!.id
+function normalizeDefaults(value: Partial<GenerationDefaults> | undefined, models: ModelDto[]): GenerationDefaults {
+  const model = models.find(item => item.id === value?.model) ?? models[0]
+  const modelId = model?.id ?? DEFAULT_MODELS[0]!.id
+  const capabilities = resolveModelCapabilities(modelId, model)
   return {
-    model: value?.model && modelIds.includes(value.model) ? value.model : fallbackModel,
-    aspectRatio: value?.aspectRatio && (ASPECT_RATIOS as readonly string[]).includes(value.aspectRatio) ? value.aspectRatio : '1:1',
-    imageSize: value?.imageSize && (IMAGE_SIZES as readonly string[]).includes(value.imageSize) ? value.imageSize : '1K',
+    model: modelId,
+    aspectRatio: value?.aspectRatio && capabilities.supportedAspectRatios.includes(value.aspectRatio) ? value.aspectRatio : '1:1',
+    imageSize: value?.imageSize && capabilities.supportedImageSizes.includes(value.imageSize) ? value.imageSize : '1K',
     count: Number.isInteger(value?.count) && value!.count! >= 1 && value!.count! <= 4 ? value!.count! : 1,
   }
 }
 
 export async function getUserSettings(userId: string, role: UserRole = 'user'): Promise<SettingsDto> {
   const settings = await getSettingsMap()
-  const modelIds = (await listModels()).map(item => item.id)
+  const models = await listModels()
   const globalDefaults = settingValue<Partial<GenerationDefaults> | undefined>(settings, 'defaults', undefined)
   const userDefaults = settingValue<Partial<GenerationDefaults> | undefined>(settings, userDefaultsKey(userId), undefined)
   return {
-    defaults: normalizeDefaults(userDefaults ?? globalDefaults, modelIds),
+    defaults: normalizeDefaults(userDefaults ?? globalDefaults, models),
     dailyBudgetUsd: Number(settingValue(settings, 'dailyBudgetUsd', 0)) || 0,
     rateLimitPerMinute: Number(settingValue(settings, 'rateLimitPerMinute', 10)) || 0,
     creditGrantUsd: Number(settingValue(settings, 'creditGrantUsd', 0)) || 0,
@@ -84,8 +82,8 @@ export async function updateUserSettings(userId: string, input: SettingsUpdate, 
   }
   if (input.defaults) {
     const current = await getUserSettings(userId, role)
-    const modelIds = (await listModels()).map(item => item.id)
-    await writeSetting(userDefaultsKey(userId), normalizeDefaults({ ...current.defaults, ...input.defaults }, modelIds))
+    const models = await listModels()
+    await writeSetting(userDefaultsKey(userId), normalizeDefaults({ ...current.defaults, ...input.defaults }, models))
   }
   if (input.dailyBudgetUsd !== undefined) await writeSetting('dailyBudgetUsd', input.dailyBudgetUsd)
   if (input.rateLimitPerMinute !== undefined) await writeSetting('rateLimitPerMinute', input.rateLimitPerMinute)
@@ -93,7 +91,9 @@ export async function updateUserSettings(userId: string, input: SettingsUpdate, 
   if (input.theme !== undefined) await writeSetting('theme', input.theme)
   if (input.allowRegistration !== undefined) await writeSetting('allowRegistration', input.allowRegistration)
   if (input.pricing !== undefined) {
-    const known = new Set((await listModels()).map(item => item.id))
+    const settings = await getSettingsMap()
+    const configured = settingValue<ModelDefinition[] | string[]>(settings, 'models', DEFAULT_MODELS)
+    const known = new Set(resolveConfiguredModels(configured).map(item => item.id))
     const unknown = Object.keys(input.pricing).filter(id => !known.has(id))
     if (unknown.length) throw new AppError('MODEL_NOT_ALLOWED', `未知模型：${unknown.join(', ')}`, 400)
     const current = settingValue<PricingTable>(await getSettingsMap(), 'pricing', {})

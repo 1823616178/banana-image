@@ -1,4 +1,5 @@
 import type { AspectRatio, ImageSize, ModelProvider } from '../types/api'
+import { SENSENOVA_ASPECT_RATIOS, SENSENOVA_IMAGE_SIZES } from './sensenova'
 
 export const ASPECT_RATIOS = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'] as const satisfies readonly AspectRatio[]
 export const IMAGE_SIZES = ['1K', '2K', '4K'] as const satisfies readonly ImageSize[]
@@ -121,6 +122,24 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
 
 export function defaultModel(id: string) {
   return DEFAULT_MODELS.find(item => item.id === id)
+}
+
+export interface ModelCapabilities {
+  provider: ModelProvider
+  maxReferenceImages: number
+  supportedAspectRatios: readonly AspectRatio[]
+  supportedImageSizes: readonly ImageSize[]
+}
+
+export function resolveModelCapabilities(id: string, definition?: Partial<Pick<ModelDefinition, 'provider' | 'maxReferenceImages'>>): ModelCapabilities {
+  const item = defaultModel(id) ?? definition
+  const provider = item?.provider ?? (id.toLowerCase().includes('sensenova') ? 'sensenova' : 'vertex')
+  return {
+    provider,
+    maxReferenceImages: provider === 'sensenova' ? 0 : item?.maxReferenceImages ?? 14,
+    supportedAspectRatios: provider === 'sensenova' ? SENSENOVA_ASPECT_RATIOS : ASPECT_RATIOS,
+    supportedImageSizes: provider === 'sensenova' ? SENSENOVA_IMAGE_SIZES : IMAGE_SIZES,
+  }
 }
 
 /**

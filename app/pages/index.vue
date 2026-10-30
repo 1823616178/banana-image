@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ASPECT_RATIOS, DEFAULT_MODELS, IMAGE_SIZES } from '#shared/config/models'
+import { DEFAULT_MODELS, resolveModelCapabilities } from '#shared/config/models'
 import type { ApiFailure, AspectRatio, GenerationDto, ImageDto, ImageSize, ModelDto, PresetDto, SettingsDto, TemplateDto } from '#shared/types/api'
 
 const toast = useToast()
@@ -7,7 +7,7 @@ const api = useApi()
 const route = useRoute()
 const { data: remoteModels } = await useAsyncData('home-models', () => api<ModelDto[]>('/api/models').catch(() => null))
 const { data: userSettings } = await useAsyncData('home-settings', () => api<SettingsDto>('/api/settings').catch(() => null))
-const models = computed<ModelDto[]>(() => remoteModels.value?.length ? remoteModels.value : DEFAULT_MODELS.map(item => ({ ...item, officialPrices: item.prices, tokenPrices: item.tokenPrices ?? null, priceSource: item.priceSource ?? null, priceCheckedAt: item.priceCheckedAt ?? null })))
+const models = computed<ModelDto[]>(() => remoteModels.value?.length ? remoteModels.value : DEFAULT_MODELS.filter(item => resolveModelCapabilities(item.id).provider !== 'sensenova').map(item => ({ ...item, officialPrices: item.prices, tokenPrices: item.tokenPrices ?? null, priceSource: item.priceSource ?? null, priceCheckedAt: item.priceCheckedAt ?? null })))
 const { data: presets } = await useAsyncData('home-presets', () => api<PresetDto[]>('/api/presets').catch(() => [] as PresetDto[]))
 const { data: templates } = await useAsyncData('home-templates', () => api<TemplateDto[]>('/api/templates').catch(() => [] as TemplateDto[]))
 const stylePresetId = ref('')
@@ -29,10 +29,17 @@ const modelOptions = computed(() => models.value.map(item => ({
   caption: formatImagePrice(item.prices[imageSize.value]),
   hint: `${item.description}${item.tokenPrices ? `｜输入 $${item.tokenPrices.inputPerMillion}/百万 tokens，图片输出 $${item.tokenPrices.imageOutputPerMillion}/百万 tokens` : ''}`,
 })))
-const ratioOptions = ASPECT_RATIOS.map(value => ({ value, label: value }))
-const sizeOptions = IMAGE_SIZES.map(value => ({ value, label: value }))
 const countOptions = [1, 2, 3, 4].map(value => ({ value, label: `${value} 张` }))
 const selectedModel = computed(() => models.value.find(item => item.id === model.value) ?? models.value[0]!)
+const capabilities = computed(() => resolveModelCapabilities(selectedModel.value.id, selectedModel.value))
+const ratioOptions = computed(() => capabilities.value.supportedAspectRatios.map(value => ({ value, label: value })))
+const sizeOptions = computed(() => capabilities.value.supportedImageSizes.map(value => ({ value, label: value })))
+
+watch([model, selectedModel, aspectRatio, imageSize], () => {
+  model.value = selectedModel.value.id
+  if (!capabilities.value.supportedAspectRatios.includes(aspectRatio.value)) aspectRatio.value = '1:1'
+  if (!capabilities.value.supportedImageSizes.includes(imageSize.value)) imageSize.value = '1K'
+}, { immediate: true })
 const {
   references,
   historyOptions,
@@ -44,7 +51,7 @@ const {
   onDragOver,
   onDragLeave,
   onDrop,
-} = useReferenceUploads(() => selectedModel.value.maxReferenceImages)
+} = useReferenceUploads(() => capabilities.value.maxReferenceImages)
 const unitPrice = computed(() => selectedModel.value.prices[imageSize.value] ?? 0)
 const isGenerating = computed(() => requestPending.value || ['queued', 'running'].includes(activeGeneration.value?.status ?? ''))
 const resultTitle = computed(() => activeGeneration.value ? `任务 #${activeGeneration.value.id}` : '等待第一笔色彩')
@@ -213,7 +220,7 @@ onUnmounted(() => {
           <div class="container_home_prompt_top_hint"><span>Ctrl + Enter 开始作画</span><span>{{ prompt.length }} / 4000</span></div>
         </div>
 
-        <div class="container_home_upload_side_group">
+        <div v-if="capabilities.maxReferenceImages > 0" class="container_home_upload_side_group">
           <p class="container_home_upload_side_label">参考图（可选，支持拖拽或 Ctrl+V 粘贴图片）</p>
           <div v-if="historyOptions.length" class="container_home_history_top_wrap">
             <span class="container_home_history_top_title">最近上传 · 点击复用</span>
@@ -232,6 +239,8 @@ onUnmounted(() => {
             <input ref="fileInput" class="container_home_upload_side_file" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="onFileChange">
           </div>
         </div>
+
+        <p v-else class="container_home_upload_side_label">当前模型仅支持文字生成</p>
 
         <HomePromptPanel :references="references" :templates="templates ?? []" @use="usePrompt" @template-used="markTemplateUsed" />
 

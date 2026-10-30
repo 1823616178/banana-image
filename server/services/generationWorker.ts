@@ -10,10 +10,12 @@ import { purgeDeletedDuplicate } from '#server/services/images'
 import { recordDailyCost } from '#server/services/rateLimit'
 import { getRedis } from '#server/services/redis'
 import { getSettingsMap, settingValue } from '#server/services/settings'
+import { resolveConfiguredModels, validateModelRequest } from '#server/services/modelCatalog'
 import { deleteStoredFiles, readStoredImage, saveImage } from '#server/services/storage'
 import { generateWithVertex } from '#server/services/vertex'
 import { generateWithSenseNova } from '#server/services/sensenova'
-import { defaultModel } from '#shared/config/models'
+import { DEFAULT_MODELS } from '#shared/config/models'
+import type { ModelDefinition } from '#shared/config/models'
 import { AppError, logCaughtError } from '#server/utils/errors'
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -89,13 +91,17 @@ export async function processGeneration(id: string) {
   if (!generation || generation.status !== 'running') return
 
   const startedAt = Date.now()
+  const settings = await getSettingsMap()
+  const configuredModels = settingValue<ModelDefinition[] | string[]>(settings, 'models', DEFAULT_MODELS)
+  const model = resolveConfiguredModels(configuredModels).find(item => item.id === generation.model)
+  if (!model) throw new AppError('MODEL_NOT_ALLOWED', '所选模型不在可用列表中', 400)
+  validateModelRequest(model, generation)
   const references = await loadReferences(generation)
-  const isSenseNova = defaultModel(generation.model)?.provider === 'sensenova' || generation.model.toLowerCase().includes('sensenova')
 
   const outcomes = await Promise.allSettled(Array.from({ length: generation.count }, async () => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const result = isSenseNova
+        const result = model.provider === 'sensenova'
           ? await generateWithSenseNova({
             prompt: generation.finalPrompt,
             model: generation.model,
@@ -112,7 +118,7 @@ export async function processGeneration(id: string) {
         if (!result.images.length) throw noImageError(result.finishReasons, result.text)
         return result
       } catch (error) {
-        const classified = classifyGenerationError(error)
+        const classified = classifyGenerationError(error, model.provider)
         const retryable = shouldRetry(classified, attempt)
         if (!retryable) throw new AppError(classified.code, classified.message, 502, undefined, { cause: error })
         logCaughtError(`worker generation ${generation.id} attempt ${attempt + 1} retrying`, error)
@@ -130,7 +136,7 @@ export async function processGeneration(id: string) {
   for (const [index, outcome] of outcomes.entries()) {
     if (outcome.status === 'rejected') {
       logCaughtError(`worker generation ${id} image ${index + 1}`, outcome.reason)
-      const classified = classifyGenerationError(outcome.reason)
+      const classified = classifyGenerationError(outcome.reason, model.provider)
       errors.push(`第 ${index + 1} 张：${classified.message}`)
       blocked ||= classified.blocked
       continue
@@ -146,7 +152,6 @@ export async function processGeneration(id: string) {
     }
   }
 
-  const settings = await getSettingsMap()
   const pricing = settingValue<PricingTable>(settings, 'pricing', {})
   const costUsd = calculateGenerationCost({ model: generation.model, imageSize: generation.imageSize, imageCount: savedImages.length, inputTokens, outputTokens, pricing })
   const status = savedImages.length === generation.count ? 'succeeded' : savedImages.length ? 'partial' : blocked ? 'blocked' : 'failed'

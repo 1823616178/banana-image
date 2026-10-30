@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ASPECT_RATIOS, IMAGE_SIZES } from '#shared/config/models'
+import { resolveModelCapabilities } from '#shared/config/models'
 import type { HealthDto, ModelDto, SettingsDto, UsageStatsDto } from '#shared/types/api'
 
 useHead({ title: '设置 · banana-image' })
@@ -50,6 +50,12 @@ watch([settings, models], ([value, list]) => {
   pricingDraft.value = Object.fromEntries([...ids].map(id => [id, { '1K': value.pricing[id]?.['1K'] ?? '', '2K': value.pricing[id]?.['2K'] ?? '', '4K': value.pricing[id]?.['4K'] ?? '' }]))
 }, { immediate: true })
 const modelById = (id: string) => models.value?.find(item => item.id === id)
+const defaultCapabilities = computed(() => resolveModelCapabilities(form.model, modelById(form.model)))
+
+watch([() => form.model, () => form.aspectRatio, () => form.imageSize, models], () => {
+  if (!defaultCapabilities.value.supportedAspectRatios.includes(form.aspectRatio)) form.aspectRatio = '1:1'
+  if (!defaultCapabilities.value.supportedImageSizes.includes(form.imageSize)) form.imageSize = '1K'
+}, { immediate: true })
 
 const maxDayCost = computed(() => Math.max(0.0001, ...(stats.value?.days.map(day => day.costUsd) ?? [0])))
 const maxDayImages = computed(() => Math.max(1, ...(stats.value?.days.map(day => day.images) ?? [0])))
@@ -163,10 +169,10 @@ async function changePassword() {
           </label>
           <div class="container_settings_form_item_row">
             <label class="container_settings_form_item_label">画布比例
-              <select v-model="form.aspectRatio" class="container_settings_form_item_select"><option v-for="item in ASPECT_RATIOS" :key="item" :value="item">{{ item }}</option></select>
+              <select v-model="form.aspectRatio" class="container_settings_form_item_select"><option v-for="item in defaultCapabilities.supportedAspectRatios" :key="item" :value="item">{{ item }}</option></select>
             </label>
             <label class="container_settings_form_item_label">分辨率
-              <select v-model="form.imageSize" class="container_settings_form_item_select"><option v-for="item in IMAGE_SIZES" :key="item" :value="item">{{ item }}</option></select>
+              <select v-model="form.imageSize" class="container_settings_form_item_select"><option v-for="item in defaultCapabilities.supportedImageSizes" :key="item" :value="item">{{ item }}</option></select>
             </label>
             <label class="container_settings_form_item_label">张数
               <select v-model.number="form.count" class="container_settings_form_item_select"><option v-for="item in [1, 2, 3, 4]" :key="item" :value="item">{{ item }}</option></select>

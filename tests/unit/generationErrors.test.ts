@@ -59,3 +59,28 @@ describe('重试策略', () => {
     expect([0, 1, 2].map(retryDelayMs)).toEqual([1000, 2000, 4000])
   })
 })
+
+describe('多供应商错误分类', () => {
+  it.each([
+    [new AppError('SENSENOVA_AUTH_FAILED', 'Invalid API key', 401), 'SENSENOVA_AUTH_FAILED', 'never'],
+    [new AppError('QUOTA_EXCEEDED', 'Too many requests', 429), 'QUOTA_EXCEEDED', 'quota'],
+    [new AppError('GENERATION_FAILED', 'SenseNova 生成失败 (HTTP 503): Service unavailable', 503), 'SENSENOVA_UNAVAILABLE', 'transient'],
+    [new TimeoutError('下载 SenseNova 生成图片超时'), 'SENSENOVA_TIMEOUT', 'timeout'],
+  ] as const)('保留商汤供应商和重试语义（%#）', (error, code, retry) => {
+    const classified = classifyGenerationError(error, 'sensenova')
+    expect(classified).toMatchObject({ code, retry })
+    expect(classified.message).toContain('SenseNova')
+    const wrapped = new AppError(classified.code, classified.message, 502)
+    expect(classifyGenerationError(wrapped, 'sensenova')).toEqual(classified)
+  })
+
+  it('Worker 外层无需上下文也能识别商汤认证错误', () => {
+    const classified = classifyGenerationError(new AppError('SENSENOVA_AUTH_FAILED', '认证失败', 502))
+    expect(classified.code).toBe('SENSENOVA_AUTH_FAILED')
+    expect(classified.message).toContain('SENSENOVA_API_KEY')
+  })
+
+  it('缺少密钥属于配置问题，不重试', () => {
+    expect(classifyGenerationError(new AppError('SENSENOVA_NOT_CONFIGURED', '未配置密钥', 503))).toMatchObject({ code: 'SENSENOVA_NOT_CONFIGURED', retry: 'never' })
+  })
+})

@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, ref, toValue, type MaybeRefOrGetter } from 'vue'
+import { computed, onMounted, onUnmounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import type { ImageDto, PageDto } from '#shared/types/api'
 
 const MAX_UPLOAD_BYTES = 7 * 1024 * 1024
@@ -26,6 +26,13 @@ export function useReferenceUploads(maxReferences: MaybeRefOrGetter<number>) {
   const uploadHistory = ref<ImageDto[]>([])
   const uploading = ref(false)
   const dragging = ref(false)
+
+  watch(() => toValue(maxReferences), (max) => {
+    if (max <= 0) dragging.value = false
+    if (references.value.length <= max) return
+    references.value = references.value.slice(0, Math.max(0, max))
+    toast.show(max <= 0 ? '当前模型不支持参考图，已移除所选参考图' : `当前模型最多使用 ${max} 张参考图，已移除多余图片`, 'info')
+  }, { flush: 'sync' })
 
   const historyOptions = computed(() => uploadHistory.value
     .filter(item => !references.value.some(picked => picked.id === item.id))
@@ -120,7 +127,7 @@ export function useReferenceUploads(maxReferences: MaybeRefOrGetter<number>) {
   }
 
   function onDragOver(event: DragEvent) {
-    if (!hasDraggedFiles(event)) return
+    if (toValue(maxReferences) <= 0 || !hasDraggedFiles(event)) return
     event.preventDefault()
     dragging.value = true
   }
@@ -138,6 +145,7 @@ export function useReferenceUploads(maxReferences: MaybeRefOrGetter<number>) {
   }
 
   function onPaste(event: ClipboardEvent) {
+    if (toValue(maxReferences) <= 0) return
     const data = event.clipboardData
     if (!data) return
     const types = Array.from(data.types ?? [])

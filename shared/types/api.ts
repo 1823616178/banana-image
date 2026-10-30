@@ -114,6 +114,8 @@ export interface ModelDto {
   description: string
   provider?: ModelProvider
   maxReferenceImages: number
+  supportedAspectRatios?: readonly AspectRatio[]
+  supportedImageSizes?: readonly ImageSize[]
   /** 实际生效的每张单价（USD）；null 表示待确认 */
   prices: Record<ImageSize, number | null>
   /** 代码内置的官方单价 */
