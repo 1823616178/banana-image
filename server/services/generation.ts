@@ -1,5 +1,5 @@
 import { In } from 'typeorm'
-import { DEFAULT_MODELS } from '#shared/config/models'
+import { DEFAULT_MODELS, defaultModel } from '#shared/config/models'
 import type { ModelDefinition } from '#shared/config/models'
 import type { AspectRatio, GenerationDto, GenerationStatus, ImageDto, ImageSize } from '#shared/types/api'
 import { initializeDatabase } from '#server/db/data-source'
@@ -102,12 +102,16 @@ export async function enqueueGeneration(id: string) {
 }
 
 export async function createGeneration(input: CreateGenerationInput) {
-  if (input.refImageIds.length > 14) throw new AppError('TOO_MANY_REFERENCES', '最多使用 14 张参考图', 400)
+  const modelDef = defaultModel(input.model)
+  const maxRef = modelDef?.maxReferenceImages ?? (input.model.toLowerCase().includes('sensenova') ? 0 : 14)
+  if (input.refImageIds.length > maxRef) {
+    throw new AppError('TOO_MANY_REFERENCES', maxRef === 0 ? '所选模型不支持参考图' : `最多使用 ${maxRef} 张参考图`, 400)
+  }
   const source = await initializeDatabase()
   const settings = await getSettingsMap()
   const configuredModels = settingValue<ModelDefinition[] | string[]>(settings, 'models', DEFAULT_MODELS)
   const modelIds = configuredModels.map(item => typeof item === 'string' ? item : item.id)
-  const allowedModels = new Set([...modelIds, ...getServerConfig().vertex.models])
+  const allowedModels = new Set([...modelIds, ...getServerConfig().vertex.models, ...getServerConfig().sensenova.models])
   if (!allowedModels.has(input.model)) throw new AppError('MODEL_NOT_ALLOWED', '所选模型不在可用列表中', 400)
 
   const references = input.refImageIds.length

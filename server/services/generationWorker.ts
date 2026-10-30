@@ -12,6 +12,8 @@ import { getRedis } from '#server/services/redis'
 import { getSettingsMap, settingValue } from '#server/services/settings'
 import { deleteStoredFiles, readStoredImage, saveImage } from '#server/services/storage'
 import { generateWithVertex } from '#server/services/vertex'
+import { generateWithSenseNova } from '#server/services/sensenova'
+import { defaultModel } from '#shared/config/models'
 import { AppError, logCaughtError } from '#server/utils/errors'
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -88,17 +90,25 @@ export async function processGeneration(id: string) {
 
   const startedAt = Date.now()
   const references = await loadReferences(generation)
+  const isSenseNova = defaultModel(generation.model)?.provider === 'sensenova' || generation.model.toLowerCase().includes('sensenova')
 
   const outcomes = await Promise.allSettled(Array.from({ length: generation.count }, async () => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const result = await generateWithVertex({
-          prompt: generation.finalPrompt,
-          model: generation.model,
-          aspectRatio: generation.aspectRatio,
-          imageSize: generation.imageSize,
-          referenceImages: references,
-        })
+        const result = isSenseNova
+          ? await generateWithSenseNova({
+            prompt: generation.finalPrompt,
+            model: generation.model,
+            aspectRatio: generation.aspectRatio,
+            imageSize: generation.imageSize,
+          })
+          : await generateWithVertex({
+            prompt: generation.finalPrompt,
+            model: generation.model,
+            aspectRatio: generation.aspectRatio,
+            imageSize: generation.imageSize,
+            referenceImages: references,
+          })
         if (!result.images.length) throw noImageError(result.finishReasons, result.text)
         return result
       } catch (error) {

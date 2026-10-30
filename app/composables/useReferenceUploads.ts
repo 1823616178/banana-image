@@ -37,8 +37,13 @@ export function useReferenceUploads(maxReferences: MaybeRefOrGetter<number>) {
 
   function addReference(image: ImageDto) {
     if (references.value.some(item => item.id === image.id)) return
+    const max = toValue(maxReferences)
+    if (max <= 0) {
+      toast.show('当前模型不支持参考图', 'info')
+      return
+    }
     if (isFull()) {
-      toast.show(`最多使用 ${toValue(maxReferences)} 张参考图`, 'info')
+      toast.show(`最多使用 ${max} 张参考图`, 'info')
       return
     }
     references.value.push(image)
@@ -66,6 +71,11 @@ export function useReferenceUploads(maxReferences: MaybeRefOrGetter<number>) {
   async function uploadFiles(input: FileList | File[] | null | undefined) {
     const files = Array.from(input ?? [])
     if (!files.length) return
+    const max = toValue(maxReferences)
+    if (max <= 0) {
+      toast.show('当前模型不支持参考图', 'info')
+      return
+    }
     if (uploading.value) {
       toast.show('上一批图片还在上传，请稍候再试', 'info')
       return
@@ -74,7 +84,7 @@ export function useReferenceUploads(maxReferences: MaybeRefOrGetter<number>) {
     try {
       for (const file of files) {
         if (isFull()) {
-          toast.show(`最多使用 ${toValue(maxReferences)} 张参考图，其余图片未上传`, 'info')
+          toast.show(`最多使用 ${max} 张参考图，其余图片未上传`, 'info')
           break
         }
         if (!file.type.startsWith('image/')) {

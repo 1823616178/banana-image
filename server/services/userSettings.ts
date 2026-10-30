@@ -15,16 +15,19 @@ export async function listModels(): Promise<ModelDto[]> {
   const pricing = settingValue<PricingTable>(settings, 'pricing', {})
   const ids = configured.map(item => typeof item === 'string' ? item : item.id)
   for (const id of getServerConfig().vertex.models) if (!ids.includes(id)) ids.push(id)
+  for (const id of getServerConfig().sensenova.models) if (!ids.includes(id)) ids.push(id)
   const stored = new Map(configured.filter((item): item is ModelDefinition => typeof item !== 'string').map(item => [item.id, item]))
   return ids.map((id) => {
     // 代码内置定义（含官方价格与来源）优先，数据库里旧的模型快照只作补充。
     const item = defaultModel(id) ?? stored.get(id)
     const official = { '1K': defaultModel(id)?.prices['1K'] ?? null, '2K': defaultModel(id)?.prices['2K'] ?? null, '4K': defaultModel(id)?.prices['4K'] ?? null }
+    const provider = item?.provider ?? (id.toLowerCase().includes('sensenova') ? 'sensenova' : 'vertex')
     return {
       id,
       name: item?.name ?? id,
       description: item?.description ?? '',
-      maxReferenceImages: item?.maxReferenceImages ?? 14,
+      provider,
+      maxReferenceImages: item?.maxReferenceImages ?? (provider === 'sensenova' ? 0 : 14),
       prices: { '1K': effectivePrice(id, '1K', pricing), '2K': effectivePrice(id, '2K', pricing), '4K': effectivePrice(id, '4K', pricing) },
       officialPrices: official,
       tokenPrices: defaultModel(id)?.tokenPrices ?? null,

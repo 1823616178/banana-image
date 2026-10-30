@@ -1,4 +1,4 @@
-import type { AspectRatio, ImageSize } from '../types/api'
+import type { AspectRatio, ImageSize, ModelProvider } from '../types/api'
 
 export const ASPECT_RATIOS = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'] as const satisfies readonly AspectRatio[]
 export const IMAGE_SIZES = ['1K', '2K', '4K'] as const satisfies readonly ImageSize[]
@@ -19,7 +19,8 @@ export interface ModelDefinition {
   id: string
   name: string
   description: string
-  location: 'global'
+  provider?: ModelProvider
+  location?: 'global'
   maxReferenceImages: number
   prices: SizePrices
   tokenPrices?: TokenPrices | null
@@ -95,6 +96,26 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     tokenPrices: { inputPerMillion: 0.3, textOutputPerMillion: 2.5, imageOutputPerMillion: 30 },
     priceSource: PRICE_SOURCE_URL,
     priceCheckedAt: PRICE_CHECKED_AT,
+  },
+  {
+    id: 'sensenova-u1-fast',
+    name: 'SenseNova U1 Fast (商汤)',
+    description: '商汤快速生图模型，中文理解与信息图设计排版出色',
+    provider: 'sensenova',
+    maxReferenceImages: 0,
+    prices: { '1K': 0.02, '2K': 0.04, '4K': null },
+    priceSource: 'https://platform.sensenova.cn/docs',
+    priceCheckedAt: '2026-10-30',
+  },
+  {
+    id: 'sensenova-u1-pro',
+    name: 'SenseNova U1 Pro (商汤)',
+    description: '商汤旗舰画质，画面细腻逼真，擅长构图与光影',
+    provider: 'sensenova',
+    maxReferenceImages: 0,
+    prices: { '1K': 0.05, '2K': 0.08, '4K': null },
+    priceSource: 'https://platform.sensenova.cn/docs',
+    priceCheckedAt: '2026-10-30',
   },
 ]
 

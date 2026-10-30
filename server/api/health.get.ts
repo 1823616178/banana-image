@@ -4,6 +4,7 @@ import { connectRedis } from '#server/services/redis'
 import { checkFtpConnection } from '#server/services/ftp'
 import { getServerConfig } from '#server/utils/config'
 import { checkVertexConnection } from '#server/services/vertex'
+import { checkSenseNovaConnection } from '#server/services/sensenova'
 import { withTimeout } from '#server/utils/async'
 import { errorMessage, logCaughtError } from '#server/utils/errors'
 import { respond } from '#server/utils/response'
@@ -21,11 +22,13 @@ async function check(action: () => Promise<unknown>): Promise<HealthCheck> {
 
 export default defineEventHandler(event => respond<HealthDto>(event, async () => {
   const ftpEnabled = getServerConfig().ftp.enabled
-  const [database, redis, vertex, ftp] = await Promise.all([
+  const sensenovaConfigured = Boolean(getServerConfig().sensenova.apiKey)
+  const [database, redis, vertex, sensenova, ftp] = await Promise.all([
     check(async () => (await initializeDatabase()).query('SELECT 1')),
     check(async () => (await connectRedis()).ping()),
     check(checkVertexConnection),
+    sensenovaConfigured ? check(checkSenseNovaConnection) : Promise.resolve<HealthCheck>({ status: 'disabled', message: '未配置 SENSENOVA_API_KEY', latencyMs: 0 }),
     ftpEnabled ? check(checkFtpConnection) : Promise.resolve<HealthCheck>({ status: 'disabled', message: '未配置 FTP_HOST', latencyMs: 0 }),
   ])
-  return { database, redis, vertex, ftp }
+  return { database, redis, vertex, sensenova, ftp }
 }))

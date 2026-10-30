@@ -216,7 +216,7 @@ async function changePassword() {
 
       <section class="container_settings_health_main_panel">
         <h2 class="container_settings_section_main_title">连接测试</h2>
-        <CommonPaintButton variant="secondary" :loading="checking" @click="checkHealth">检测 MySQL / Redis / Vertex / FTP</CommonPaintButton>
+        <CommonPaintButton variant="secondary" :loading="checking" @click="checkHealth">检测服务连接</CommonPaintButton>
         <ul v-if="health" class="container_settings_health_main_list">
           <li v-for="(item, key) in health" :key="key" class="container_settings_health_item_row" :data-status="item.status"><strong>{{ key }}</strong> {{ item.status === 'ok' ? '正常' : item.status === 'disabled' ? '未启用' : '异常' }}<template v-if="item.status !== 'disabled'"> · {{ item.latencyMs }}ms</template><span v-if="item.status !== 'ok'"> · {{ item.message }}</span></li>
         </ul>

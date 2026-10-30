@@ -57,6 +57,8 @@ export interface GenerationDto {
   updatedAt: string
 }
 
+export type ModelProvider = 'vertex' | 'sensenova'
+
 export interface HealthCheck {
   status: 'ok' | 'error' | 'disabled'
   message: string
@@ -67,6 +69,7 @@ export interface HealthDto {
   database: HealthCheck
   redis: HealthCheck
   vertex: HealthCheck
+  sensenova: HealthCheck
   ftp: HealthCheck
 }
 
@@ -109,6 +112,7 @@ export interface ModelDto {
   id: string
   name: string
   description: string
+  provider?: ModelProvider
   maxReferenceImages: number
   /** 实际生效的每张单价（USD）；null 表示待确认 */
   prices: Record<ImageSize, number | null>

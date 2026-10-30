@@ -56,6 +56,12 @@ export function getServerConfig() {
       promptRatePerMinute: Math.max(0, numberFromEnv(process.env.PROMPT_RECOMMEND_PER_MINUTE, 6)),
       models: (process.env.IMAGE_MODELS || 'gemini-nano-banana-2.1,gemini-3-pro-image,gemini-3.1-flash-image,gemini-3.1-flash-lite-image,gemini-2.5-flash-image').split(',').map(item => item.trim()).filter(Boolean),
     },
+    sensenova: {
+      apiKey: (process.env.SENSENOVA_API_KEY || '').trim(),
+      baseUrl: (process.env.SENSENOVA_BASE_URL || 'https://token.sensenova.cn/v1').trim().replace(/\/+$/, ''),
+      defaultModel: process.env.SENSENOVA_DEFAULT_MODEL || 'sensenova-u1-fast',
+      models: (process.env.SENSENOVA_MODELS || 'sensenova-u1-fast,sensenova-u1-pro').split(',').map(item => item.trim()).filter(Boolean),
+    },
     ftp: ftpConfig(),
     storageDir: resolve(process.cwd(), process.env.STORAGE_DIR || './storage'),
     workerConcurrency: Math.max(1, Math.min(8, numberFromEnv(process.env.WORKER_CONCURRENCY, 2))),
