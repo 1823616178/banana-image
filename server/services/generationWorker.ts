@@ -14,6 +14,7 @@ import { resolveConfiguredModels, validateModelRequest } from '#server/services/
 import { deleteStoredFiles, readStoredImage, saveImage } from '#server/services/storage'
 import { generateWithVertex } from '#server/services/vertex'
 import { prepareSenseNovaGeneration } from '#server/services/sensenova'
+import { prepareCopilotGeneration } from '#server/services/copilot'
 import { DEFAULT_MODELS } from '#shared/config/models'
 import type { ModelDefinition } from '#shared/config/models'
 import { AppError, logCaughtError } from '#server/utils/errors'
@@ -106,7 +107,9 @@ export async function processGeneration(id: string) {
   }
   const generate = model.provider === 'sensenova'
     ? prepareSenseNovaGeneration(request)
-    : () => generateWithVertex(request)
+    : model.provider === 'copilot'
+      ? prepareCopilotGeneration(request)
+      : () => generateWithVertex(request)
 
   const outcomes = await Promise.allSettled(Array.from({ length: generation.count }, async () => {
     for (let attempt = 0; ; attempt++) {

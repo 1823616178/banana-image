@@ -62,6 +62,11 @@ export function getServerConfig() {
       defaultModel: process.env.SENSENOVA_DEFAULT_MODEL || 'sensenova-u1.5-lite',
       models: (process.env.SENSENOVA_MODELS || 'sensenova-u1.5-lite').split(',').map(item => item.trim()).filter(Boolean),
     },
+    copilot: {
+      // 自建 Copilot OpenAI 兼容服务地址；留空则禁用 Copilot 模型
+      baseUrl: (process.env.COPILOT_BASE_URL || '').trim().replace(/\/+$/, '').replace(/\/v1$/, ''),
+      models: (process.env.COPILOT_MODELS || 'copilot-image').split(',').map(item => item.trim()).filter(Boolean),
+    },
     ftp: ftpConfig(),
     storageDir: resolve(process.cwd(), process.env.STORAGE_DIR || './storage'),
     workerConcurrency: Math.max(1, Math.min(8, numberFromEnv(process.env.WORKER_CONCURRENCY, 2))),

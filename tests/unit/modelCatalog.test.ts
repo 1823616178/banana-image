@@ -20,6 +20,7 @@ const input = { userId: '1', prompt: 'a cat', model: 'sensenova-u1.5-lite', aspe
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubEnv('SENSENOVA_API_KEY', '')
+  vi.stubEnv('COPILOT_BASE_URL', '')
   vi.mocked(getSettingsMap).mockResolvedValue({})
 })
 

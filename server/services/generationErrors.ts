@@ -15,10 +15,16 @@ export function classifyGenerationError(error: unknown, provider: ModelProvider 
   const message = errorMessage(error)
   const normalized = `${code ?? ''} ${message}`.toLowerCase()
   if (String(code).startsWith('SENSENOVA_')) provider = 'sensenova'
-  const prefix = provider === 'sensenova' ? 'SENSENOVA' : 'VERTEX'
-  const label = provider === 'sensenova' ? 'SenseNova' : 'Vertex'
+  if (String(code).startsWith('COPILOT_')) provider = 'copilot'
+  const prefix = provider === 'sensenova' ? 'SENSENOVA' : provider === 'copilot' ? 'COPILOT' : 'VERTEX'
+  const label = provider === 'sensenova' ? 'SenseNova' : provider === 'copilot' ? 'Copilot' : 'Vertex'
 
-  if (code === 'SENSENOVA_NOT_CONFIGURED' || code === 'VERTEX_NOT_CONFIGURED') {
+  if (code === 'SENSENOVA_NOT_CONFIGURED' || code === 'VERTEX_NOT_CONFIGURED' || code === 'COPILOT_NOT_CONFIGURED') {
+    return { code, message, retry: 'never', blocked: false }
+  }
+
+  // 下载已在适配器内部重试，不能把 CDN 的 403/404/超时当成生成错误再出图。
+  if (code === 'COPILOT_DOWNLOAD_FAILED') {
     return { code, message, retry: 'never', blocked: false }
   }
 
@@ -31,10 +37,10 @@ export function classifyGenerationError(error: unknown, provider: ModelProvider 
     return { code: 'QUOTA_EXCEEDED', message: `${label} 额度或频率受限，请稍后重试`, retry: 'quota', blocked: false }
   }
   if (/(^|\D)40[13](\D|$)|unauthenticated|permission.denied|forbidden|unauthorized|auth.failed/.test(normalized)) {
-    return { code: `${prefix}_AUTH_FAILED`, message: provider === 'sensenova' ? 'SenseNova 认证失败，请检查 SENSENOVA_API_KEY 及模型权限' : 'Vertex 认证失败，请运行 gcloud auth application-default login 并检查项目权限', retry: 'never', blocked: false }
+    return { code: `${prefix}_AUTH_FAILED`, message: provider === 'sensenova' ? 'SenseNova 认证失败，请检查 SENSENOVA_API_KEY 及模型权限' : provider === 'copilot' ? 'Copilot 登录已失效，请在 Copilot API 服务器上重新登录或更新 token.json' : 'Vertex 认证失败，请运行 gcloud auth application-default login 并检查项目权限', retry: 'never', blocked: false }
   }
   if (/(^|\D)404(\D|$)|not.found/.test(normalized)) {
-    return { code: 'MODEL_NOT_FOUND', message: provider === 'sensenova' ? 'SenseNova 模型 ID 不正确，请检查模型设置' : '模型 ID 或 location 不正确，请检查模型设置', retry: 'never', blocked: false }
+    return { code: 'MODEL_NOT_FOUND', message: provider === 'sensenova' ? 'SenseNova 模型 ID 不正确，请检查模型设置' : provider === 'copilot' ? 'Copilot 接口地址不正确，请检查 COPILOT_BASE_URL' : '模型 ID 或 location 不正确，请检查模型设置', retry: 'never', blocked: false }
   }
   if (/timeout|timed.?out|deadline.exceeded|超时/.test(normalized)) {
     return { code: `${prefix}_TIMEOUT`, message: `${label} 图像生成超时`, retry: 'timeout', blocked: false }

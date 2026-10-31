@@ -83,4 +83,11 @@ describe('多供应商错误分类', () => {
   it('缺少密钥属于配置问题，不重试', () => {
     expect(classifyGenerationError(new AppError('SENSENOVA_NOT_CONFIGURED', '未配置密钥', 503))).toMatchObject({ code: 'SENSENOVA_NOT_CONFIGURED', retry: 'never' })
   })
+
+  it.each(['下载失败 (HTTP 403)', '下载失败 (HTTP 404)', '下载失败 (HTTP 503)', '下载 Copilot 生成图片超时'])('下载错误在 Worker 包装前后均不触发重新生成（%#）', (message) => {
+    const error = new AppError('COPILOT_DOWNLOAD_FAILED', message, 502)
+    const classified = classifyGenerationError(error)
+    expect(classified).toEqual({ code: 'COPILOT_DOWNLOAD_FAILED', message, retry: 'never', blocked: false })
+    expect(classifyGenerationError(new AppError(classified.code, classified.message, 502), 'copilot')).toEqual(classified)
+  })
 })

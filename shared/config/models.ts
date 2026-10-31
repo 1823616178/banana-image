@@ -1,5 +1,6 @@
 import type { AspectRatio, ImageSize, ModelProvider } from '../types/api'
 import { SENSENOVA_ASPECT_RATIOS, SENSENOVA_IMAGE_SIZES, SENSENOVA_MAX_REFERENCE_IMAGES } from './sensenova'
+import { COPILOT_ASPECT_RATIOS, COPILOT_IMAGE_SIZES, COPILOT_MAX_REFERENCE_IMAGES } from './copilot'
 
 export const ASPECT_RATIOS = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'] as const satisfies readonly AspectRatio[]
 export const IMAGE_SIZES = ['1K', '2K', '4K'] as const satisfies readonly ImageSize[]
@@ -109,6 +110,16 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     priceSource: 'https://platform.sensenova.cn/docs',
     priceCheckedAt: '2026-10-30',
   },
+  {
+    id: 'copilot-image',
+    name: 'Microsoft Copilot',
+    description: '经自建 Copilot API 服务文生图，约 45–60 秒一张，不支持参考图，比例仅靠提示词引导',
+    provider: 'copilot',
+    maxReferenceImages: COPILOT_MAX_REFERENCE_IMAGES,
+    // 使用个人 Copilot 会员额度，不按张计费
+    prices: { '1K': 0, '2K': null, '4K': null },
+    priceCheckedAt: '2026-10-31',
+  },
 ]
 
 export function defaultModel(id: string) {
@@ -124,7 +135,12 @@ export interface ModelCapabilities {
 
 export function resolveModelCapabilities(id: string, definition?: Partial<Pick<ModelDefinition, 'provider' | 'maxReferenceImages'>>): ModelCapabilities {
   const item = defaultModel(id) ?? definition
-  const provider = item?.provider ?? (id.toLowerCase().includes('sensenova') ? 'sensenova' : 'vertex')
+  const lower = id.toLowerCase()
+  const provider = item?.provider ?? (lower.includes('sensenova') ? 'sensenova' : lower.includes('copilot') ? 'copilot' : 'vertex')
+  if (provider === 'copilot') {
+    // Copilot 仅文生图，无尺寸参数
+    return { provider, maxReferenceImages: 0, supportedAspectRatios: COPILOT_ASPECT_RATIOS, supportedImageSizes: COPILOT_IMAGE_SIZES }
+  }
   return {
     provider,
     // 自定义商汤模型能力未知，保守禁用参考图；只有代码内置定义才声明上限。

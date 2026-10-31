@@ -28,6 +28,10 @@ npm run check:classnames
 
 配置 `SENSENOVA_API_KEY` 后可使用 SenseNova U1.5 Lite。无参考图时调用文生图接口，有参考图时调用图像编辑接口；最多支持 5 张，第一张为主编辑图。参考图由服务端读取本地或 FTP 文件并转换为 Base64 Data URL，无需公开图片链接。支持 1K / 2K / 4K，宽高按官方要求对齐到 32 像素，比例限制为 1:3 到 3:1。接口参数见 [SenseNova 官方文档](https://platform.sensenova.cn/docs)。
 
+配置 `COPILOT_BASE_URL`（自建 [Windows-Copilot-API](https://github.com/1823616178/copilot-server) 服务地址，如 `http://192.168.1.25:8000`）后可使用 Microsoft Copilot 文生图（模型 `copilot-image`）。服务端调用 `/v1/images/generations` 并下载返回的图片链接后入库；仅支持文生图与 1K 档位，不支持参考图，单张约 45–60 秒，输出约 1024×1536 / 1536×1024，画布比例仅作为文字提示附加到提示词，不计费。
+
+Copilot 生成通过 Redis 按上游服务地址串行调度，多个 worker 共用同一把锁，等待期间不计入单张生成的 150 秒超时。图片下载在锁外执行，60 秒内最多尝试 3 次，下载失败不会自动重新生成。连接测试同时检查 `/healthz` 的 `token_file`；令牌文件存在不代表登录一定有效，过期或被撤销的登录仍由生成接口识别。
+
 ## 登录与多用户
 
 - 所有页面和 `/api/*`（除登录、注册、`/api/health`）都需要登录；会话保存在 `user_sessions` 表，浏览器只持有 HttpOnly Cookie `bi_session`（30 天）。

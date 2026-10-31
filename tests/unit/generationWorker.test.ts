@@ -16,7 +16,7 @@ vi.mock('#server/db/data-source', () => ({ initializeDatabase: async () => mocks
 vi.mock('#server/services/generation', () => ({ GENERATION_QUEUE: 'test:queue', setTaskStatus: vi.fn() }))
 vi.mock('#server/services/images', () => ({ purgeDeletedDuplicate: vi.fn() }))
 vi.mock('#server/services/rateLimit', () => ({ recordDailyCost: vi.fn() }))
-vi.mock('#server/services/redis', () => ({ getRedis: () => ({ scan: async () => ['0', []] }) }))
+vi.mock('#server/services/redis', () => ({ getRedis: () => ({ scan: async () => ['0', []], set: async () => 'OK', eval: async () => 1 }) }))
 vi.mock('#server/services/settings', () => ({
   getSettingsMap: async () => ({}),
   settingValue: (_settings: unknown, _key: string, fallback: unknown) => fallback,
@@ -92,6 +92,32 @@ describe('Worker 参考图传递', () => {
       ],
     }))
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('Copilot 任务使用独立供应商并记录零费用', async () => {
+    vi.stubEnv('COPILOT_BASE_URL', 'http://copilot.example:8000')
+    mocks.generationRepository.findOneBy.mockResolvedValue({ ...task, model: 'copilot-image', refImageIds: [], imageSize: '1K' })
+    expect(await processGeneration(task.id)).toBe('succeeded')
+    expect(fetchMock.mock.calls[0]![0]).toBe('http://copilot.example:8000/v1/images/generations')
+    expect(mocks.generateWithVertex).not.toHaveBeenCalled()
+    expect(mocks.generationRepository.update).toHaveBeenCalledWith({ id: task.id }, expect.objectContaining({ status: 'succeeded', costUsd: '0.0000' }))
+  })
+
+  it('Copilot 下载失败只重试下载，不重新调用生成接口', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubEnv('COPILOT_BASE_URL', 'http://copilot.example:8000')
+    mocks.generationRepository.findOneBy.mockResolvedValue({ ...task, model: 'copilot-image', refImageIds: [], imageSize: '1K' })
+    fetchMock.mockImplementation(async (_url, options) => options?.method === 'POST'
+      ? Response.json({ data: [{ url: 'https://img.example/a.png' }] })
+      : new Response('denied', { status: 403 }))
+    const processing = processGeneration(task.id)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(await processing).toBe('failed')
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(mocks.generationRepository.update).toHaveBeenCalledWith({ id: task.id }, expect.objectContaining({ errorMessage: expect.stringContaining('下载 Copilot 生成图片失败 (HTTP 403)') }))
+    expect(mocks.saveImage).not.toHaveBeenCalled()
   })
 
   it('四张并发生成及上游重试仅编码每张参考图一次', async () => {

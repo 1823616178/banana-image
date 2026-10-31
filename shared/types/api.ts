@@ -57,7 +57,7 @@ export interface GenerationDto {
   updatedAt: string
 }
 
-export type ModelProvider = 'vertex' | 'sensenova'
+export type ModelProvider = 'vertex' | 'sensenova' | 'copilot'
 
 export interface HealthCheck {
   status: 'ok' | 'error' | 'disabled'
@@ -70,6 +70,7 @@ export interface HealthDto {
   redis: HealthCheck
   vertex: HealthCheck
   sensenova: HealthCheck
+  copilot: HealthCheck
   ftp: HealthCheck
 }
 
