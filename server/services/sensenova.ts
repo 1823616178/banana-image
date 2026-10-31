@@ -1,5 +1,5 @@
 import type { AspectRatio, ImageSize } from '#shared/types/api'
-import { SENSENOVA_DIMENSIONS } from '#shared/config/sensenova'
+import { SENSENOVA_ASPECT_RATIOS, SENSENOVA_IMAGE_SIZES, SENSENOVA_MAX_REFERENCE_IMAGES } from '#shared/config/sensenova'
 import { AppError } from '#server/utils/errors'
 import { getServerConfig } from '#server/utils/config'
 import { withAbortableTimeout } from '#server/utils/async'
@@ -9,8 +9,7 @@ export interface SenseNovaImageRequest {
   model: string
   aspectRatio: AspectRatio
   imageSize: ImageSize
-  seed?: number
-  numInferenceSteps?: number
+  referenceImages?: Array<{ data: Buffer, mimeType: string }>
 }
 
 export interface SenseNovaImageResult {
@@ -21,13 +20,31 @@ export interface SenseNovaImageResult {
   outputTokens: number
 }
 
-/** 使用官方尺寸桶，拒绝不支持的比例或分辨率，不通过缩放伪造档位。 */
+interface SenseNovaResponse {
+  data?: Array<{ url?: string, b64_json?: string, revised_prompt?: string }>
+  output_format?: string
+  usage?: { input_tokens?: number, output_tokens?: number }
+}
+
+/**
+ * 按分辨率档位的像素面积缩放；单边不超过 4096，宽高为 32 的倍数。
+ * https://platform.sensenova.cn/docs#model-u1-5-lite
+ */
 export function mapDimensions(aspectRatio: AspectRatio, imageSize: ImageSize): { width: number, height: number } {
-  const dimensions = SENSENOVA_DIMENSIONS[imageSize]
-  if (!dimensions) throw new AppError('UNSUPPORTED_IMAGE_SIZE', '当前商汤模型仅支持 1K、2K 分辨率', 400)
-  const size = dimensions[aspectRatio]
-  if (!size) throw new AppError('UNSUPPORTED_ASPECT_RATIO', '当前商汤模型不支持该画布比例', 400)
-  return { width: size[0], height: size[1] }
+  if (!SENSENOVA_IMAGE_SIZES.includes(imageSize)) {
+    throw new AppError('UNSUPPORTED_IMAGE_SIZE', '当前商汤模型不支持该分辨率', 400)
+  }
+  if (!SENSENOVA_ASPECT_RATIOS.includes(aspectRatio)) {
+    throw new AppError('UNSUPPORTED_ASPECT_RATIO', 'SenseNova 仅支持 1:3 到 3:1 之间的宽高比', 400)
+  }
+  const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number) as [number, number]
+  const side = { '1K': 1024, '2K': 2048, '4K': 4096 }[imageSize]
+  const scale = Math.min(side / Math.sqrt(ratioWidth * ratioHeight), 4096 / Math.max(ratioWidth, ratioHeight))
+  const align = (n: number) => Math.min(4096, Math.max(512, Math.round(n / 32) * 32))
+  return {
+    width: align(ratioWidth * scale),
+    height: align(ratioHeight * scale),
+  }
 }
 
 export async function checkSenseNovaConnection() {
@@ -57,6 +74,10 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
     throw new AppError('SENSENOVA_NOT_CONFIGURED', '请先在 .env 中配置 SENSENOVA_API_KEY', 503)
   }
 
+  const references = input.referenceImages ?? []
+  if (references.length > SENSENOVA_MAX_REFERENCE_IMAGES) {
+    throw new AppError('TOO_MANY_REFERENCES', `SenseNova 最多使用 ${SENSENOVA_MAX_REFERENCE_IMAGES} 张参考图`, 400)
+  }
   const { width, height } = mapDimensions(input.aspectRatio, input.imageSize)
 
   const payload: Record<string, unknown> = {
@@ -64,12 +85,16 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
     prompt: input.prompt,
     n: 1,
     size: `${width}x${height}`,
-    response_format: 'url',
+    output_format: 'png',
+    response_format: 'b64_json',
+    watermark: true,
+    prompt_extend: true,
   }
-  if (input.seed !== undefined) payload.seed = input.seed
-  if (input.numInferenceSteps !== undefined) payload.num_inference_steps = input.numInferenceSteps
+  if (references.length) {
+    payload.images = references.map(image => ({ image_url: `data:${image.mimeType};base64,${image.data.toString('base64')}` }))
+  }
 
-  const endpoint = `${config.baseUrl}/images/generations`
+  const endpoint = `${config.baseUrl}/images/${references.length ? 'edits' : 'generations'}`
   const result = await withAbortableTimeout(async (signal) => {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -80,13 +105,13 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
       },
       body: JSON.stringify(payload),
     })
+
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '')
+      const errorText = await response.text()
       let parsedMessage = errorText
       try {
         const errJson = JSON.parse(errorText)
-        const message = errJson.error?.message || errJson.message
-        if (typeof message === 'string') parsedMessage = message
+        parsedMessage = errJson.error?.message || errJson.message || errorText
       } catch {
         // 保持原始文本
       }
@@ -99,9 +124,11 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
         status >= 400 && status < 600 ? status : 502
       )
     }
-    return await response.json()
+
+    return await response.json() as SenseNovaResponse
   }, 120_000, 'SenseNova 图像生成超时')
-  const data = result.data as Array<{ url?: string, b64_json?: string, revised_prompt?: string }> | undefined
+
+  const data = result.data
   if (!data?.length) {
     throw new AppError('NO_IMAGE_RETURNED', 'SenseNova 未返回图片数据', 502)
   }
@@ -113,16 +140,16 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
   if (first.b64_json) {
     buffer = Buffer.from(first.b64_json, 'base64')
   } else if (first.url) {
-    const imageUrl = first.url
-    const image = await withAbortableTimeout(async (signal) => {
-      const imgRes = await fetch(imageUrl, { signal })
+    const url = first.url
+    const downloaded = await withAbortableTimeout(async (signal) => {
+      const imgRes = await fetch(url, { signal })
       if (!imgRes.ok) {
         throw new AppError('SENSENOVA_DOWNLOAD_FAILED', `下载生成图片失败 (HTTP ${imgRes.status})`, 502)
       }
       return { mimeType: imgRes.headers.get('content-type') || 'image/png', data: Buffer.from(await imgRes.arrayBuffer()) }
     }, 30_000, '下载 SenseNova 生成图片超时')
-    mimeType = image.mimeType
-    buffer = image.data
+    mimeType = downloaded.mimeType
+    buffer = downloaded.data
   } else {
     throw new AppError('NO_IMAGE_RETURNED', 'SenseNova 返回的图片缺少有效链接或内容', 502)
   }
@@ -131,7 +158,7 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
     images: [{ data: buffer, mimeType }],
     text: first.revised_prompt || '',
     finishReasons: ['STOP'],
-    inputTokens: 0,
-    outputTokens: 0,
+    inputTokens: result.usage?.input_tokens ?? 0,
+    outputTokens: result.usage?.output_tokens ?? 0,
   }
 }

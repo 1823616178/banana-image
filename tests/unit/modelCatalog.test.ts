@@ -15,7 +15,7 @@ vi.mock('#server/services/settings', () => ({
 }))
 vi.mock('#server/services/rateLimit', () => ({ checkDailyBudget: vi.fn(), enforceGenerationRate: vi.fn() }))
 
-const input = { userId: '1', prompt: 'a cat', model: 'sensenova-u1-fast', aspectRatio: '1:1', imageSize: '2K', count: 1, refImageIds: [] } as const
+const input = { userId: '1', prompt: 'a cat', model: 'sensenova-u1.5-lite', aspectRatio: '1:1', imageSize: '2K', count: 1, refImageIds: [] } as const
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -36,7 +36,7 @@ describe('模型目录与可用性', () => {
   it('配置密钥后暴露商汤模型的实际能力', async () => {
     vi.stubEnv('SENSENOVA_API_KEY', 'test-key')
     const models = await listModels()
-    expect(models.find(model => model.id === input.model)).toMatchObject({ provider: 'sensenova', maxReferenceImages: 0, supportedImageSizes: ['1K', '2K'] })
+    expect(models.find(model => model.id === input.model)).toMatchObject({ provider: 'sensenova', maxReferenceImages: 5, supportedImageSizes: ['1K', '2K', '4K'] })
     expect(models.find(model => model.id === input.model)!.supportedAspectRatios).not.toContain('8:1')
   })
 
@@ -52,19 +52,18 @@ describe('模型目录与可用性', () => {
     expect((await listModels()).find(model => model.id === 'studio-u1')).toMatchObject({ provider: 'sensenova', maxReferenceImages: 0 })
   })
 
-  it('旧的商汤 4K、极端比例默认值自动回落到支持的选项', async () => {
+  it('旧设置的极端比例默认值自动回落到支持的选项', async () => {
     vi.stubEnv('SENSENOVA_API_KEY', 'test-key')
     vi.mocked(getSettingsMap).mockResolvedValue({ defaults: { model: input.model, aspectRatio: '8:1', imageSize: '4K' } })
-    expect((await getUserSettings('1')).defaults).toMatchObject({ model: input.model, aspectRatio: '1:1', imageSize: '1K' })
+    expect((await getUserSettings('1')).defaults).toMatchObject({ model: input.model, aspectRatio: '1:1', imageSize: '4K' })
   })
 })
 
 describe('入队前校验', () => {
   it.each([
     [{}, '', 'SENSENOVA_NOT_CONFIGURED'],
-    [{ imageSize: '4K' }, 'test-key', 'UNSUPPORTED_IMAGE_SIZE'],
     [{ aspectRatio: '8:1' }, 'test-key', 'UNSUPPORTED_ASPECT_RATIO'],
-    [{ refImageIds: ['123'] }, 'test-key', 'TOO_MANY_REFERENCES'],
+    [{ refImageIds: ['1', '2', '3', '4', '5', '6'] }, 'test-key', 'TOO_MANY_REFERENCES'],
     [{ model: 'unknown-model' }, 'test-key', 'MODEL_NOT_ALLOWED'],
   ] as const)('拒绝无效请求，且不消耗频率或预算（%#）', async (overrides, key, code) => {
     vi.stubEnv('SENSENOVA_API_KEY', key)

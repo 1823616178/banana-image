@@ -119,6 +119,10 @@ async function generate() {
     return
   }
   if (isGenerating.value) return
+  if (references.value.length > capabilities.value.maxReferenceImages) {
+    toast.show(`当前模型最多使用 ${capabilities.value.maxReferenceImages} 张参考图，请移除多余的图片`, 'info')
+    return
+  }
 
   requestPending.value = true
   const previous = activeGeneration.value
@@ -222,6 +226,7 @@ onUnmounted(() => {
 
         <div v-if="capabilities.maxReferenceImages > 0" class="container_home_upload_side_group">
           <p class="container_home_upload_side_label">参考图（可选，支持拖拽或 Ctrl+V 粘贴图片）</p>
+          <p v-if="capabilities.provider === 'sensenova' && capabilities.maxReferenceImages > 0" class="container_home_prompt_top_hint">最多 {{ capabilities.maxReferenceImages }} 张，第一张为主编辑图</p>
           <div v-if="historyOptions.length" class="container_home_history_top_wrap">
             <span class="container_home_history_top_title">最近上传 · 点击复用</span>
             <div class="container_home_history_main_list">

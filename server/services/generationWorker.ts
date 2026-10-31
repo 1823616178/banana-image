@@ -107,6 +107,7 @@ export async function processGeneration(id: string) {
             model: generation.model,
             aspectRatio: generation.aspectRatio,
             imageSize: generation.imageSize,
+            referenceImages: references,
           })
           : await generateWithVertex({
             prompt: generation.finalPrompt,

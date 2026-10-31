@@ -59,8 +59,8 @@ export function getServerConfig() {
     sensenova: {
       apiKey: (process.env.SENSENOVA_API_KEY || '').trim(),
       baseUrl: (process.env.SENSENOVA_BASE_URL || 'https://token.sensenova.cn/v1').trim().replace(/\/+$/, ''),
-      defaultModel: process.env.SENSENOVA_DEFAULT_MODEL || 'sensenova-u1-fast',
-      models: (process.env.SENSENOVA_MODELS || 'sensenova-u1-fast,sensenova-u1-pro').split(',').map(item => item.trim()).filter(Boolean),
+      defaultModel: process.env.SENSENOVA_DEFAULT_MODEL || 'sensenova-u1.5-lite',
+      models: (process.env.SENSENOVA_MODELS || 'sensenova-u1.5-lite').split(',').map(item => item.trim()).filter(Boolean),
     },
     ftp: ftpConfig(),
     storageDir: resolve(process.cwd(), process.env.STORAGE_DIR || './storage'),

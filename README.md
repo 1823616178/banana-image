@@ -26,6 +26,8 @@ npm run check:classnames
 
 模型探测默认只读取元数据。确认模型、配额和费用后，可运行 `npm run probe:models -- --generate` 进行实际出图探测。
 
+配置 `SENSENOVA_API_KEY` 后可使用 SenseNova U1.5 Lite。无参考图时调用文生图接口，有参考图时调用图像编辑接口；最多支持 5 张，第一张为主编辑图。参考图由服务端读取本地或 FTP 文件并转换为 Base64 Data URL，无需公开图片链接。支持 1K / 2K / 4K，宽高按官方要求对齐到 32 像素，比例限制为 1:3 到 3:1。接口参数见 [SenseNova 官方文档](https://platform.sensenova.cn/docs)。
+
 ## 登录与多用户
 
 - 所有页面和 `/api/*`（除登录、注册、`/api/health`）都需要登录；会话保存在 `user_sessions` 表，浏览器只持有 HttpOnly Cookie `bi_session`（30 天）。

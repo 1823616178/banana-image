@@ -867,4 +867,26 @@ const tipGradId = `paint-3d-tip-${uid}`
     transform: scale(1.15);
   }
 }
+
+@keyframes brush-reduced-sweep {
+  0%, 100% { transform: translate3d(-14px, 8px, 6px); }
+  50% { transform: translate3d(14px, 8px, 6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .container_common_brush_center_stage * {
+    animation: none !important;
+  }
+
+  // 加载状态保留轻微移动，避免全局减弱动效规则使画笔看起来卡住。
+  .container_common_brush_center_pivot {
+    animation: brush-reduced-sweep 4.8s ease-in-out infinite !important;
+  }
+
+  .container_common_brush_center_stroke,
+  .container_common_brush_center_ribbon,
+  .container_common_brush_center_accent {
+    stroke-dashoffset: 0;
+  }
+}
 </style>

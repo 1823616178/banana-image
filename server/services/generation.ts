@@ -14,7 +14,8 @@ import { getSettingsMap, settingValue } from '#server/services/settings'
 import { resolveConfiguredModels, validateModelRequest } from '#server/services/modelCatalog'
 import { AppError } from '#server/utils/errors'
 
-export const GENERATION_QUEUE = 'bi:queue:generation'
+// v2: 避开旧部署遗留 worker 抢队列（旧代码会把商汤模型当 Vertex 模型请求）
+export const GENERATION_QUEUE = 'bi:queue:generation:v2'
 
 export interface CreateGenerationInput {
   userId: string

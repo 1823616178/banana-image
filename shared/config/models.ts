@@ -1,5 +1,5 @@
 import type { AspectRatio, ImageSize, ModelProvider } from '../types/api'
-import { SENSENOVA_ASPECT_RATIOS, SENSENOVA_IMAGE_SIZES } from './sensenova'
+import { SENSENOVA_ASPECT_RATIOS, SENSENOVA_IMAGE_SIZES, SENSENOVA_MAX_REFERENCE_IMAGES } from './sensenova'
 
 export const ASPECT_RATIOS = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'] as const satisfies readonly AspectRatio[]
 export const IMAGE_SIZES = ['1K', '2K', '4K'] as const satisfies readonly ImageSize[]
@@ -99,22 +99,13 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
     priceCheckedAt: PRICE_CHECKED_AT,
   },
   {
-    id: 'sensenova-u1-fast',
-    name: 'SenseNova U1 Fast (商汤)',
-    description: '商汤快速生图模型，中文理解与信息图设计排版出色',
+    id: 'sensenova-u1.5-lite',
+    name: 'SenseNova U1.5 Lite (商汤)',
+    description: '商汤图像生成与编辑模型，支持最多 5 张参考图，第一张为主编辑图',
     provider: 'sensenova',
-    maxReferenceImages: 0,
-    prices: { '1K': 0.02, '2K': 0.04, '4K': null },
-    priceSource: 'https://platform.sensenova.cn/docs',
-    priceCheckedAt: '2026-10-30',
-  },
-  {
-    id: 'sensenova-u1-pro',
-    name: 'SenseNova U1 Pro (商汤)',
-    description: '商汤旗舰画质，画面细腻逼真，擅长构图与光影',
-    provider: 'sensenova',
-    maxReferenceImages: 0,
-    prices: { '1K': 0.05, '2K': 0.08, '4K': null },
+    maxReferenceImages: SENSENOVA_MAX_REFERENCE_IMAGES,
+    // token 套餐按订阅计费，接口未提供单张价格
+    prices: { '1K': null, '2K': null, '4K': null },
     priceSource: 'https://platform.sensenova.cn/docs',
     priceCheckedAt: '2026-10-30',
   },
@@ -136,7 +127,8 @@ export function resolveModelCapabilities(id: string, definition?: Partial<Pick<M
   const provider = item?.provider ?? (id.toLowerCase().includes('sensenova') ? 'sensenova' : 'vertex')
   return {
     provider,
-    maxReferenceImages: provider === 'sensenova' ? 0 : item?.maxReferenceImages ?? 14,
+    // 自定义商汤模型能力未知，保守禁用参考图；只有代码内置定义才声明上限。
+    maxReferenceImages: provider === 'sensenova' ? defaultModel(id)?.maxReferenceImages ?? 0 : item?.maxReferenceImages ?? 14,
     supportedAspectRatios: provider === 'sensenova' ? SENSENOVA_ASPECT_RATIOS : ASPECT_RATIOS,
     supportedImageSizes: provider === 'sensenova' ? SENSENOVA_IMAGE_SIZES : IMAGE_SIZES,
   }
