@@ -96,3 +96,24 @@ WantedBy=multi-user.target
 ```
 
 FTP 使用被动模式（EPSV/PASV），服务器防火墙需放行 FTP 服务端的 21 端口和被动端口范围。
+
+### PM2 启动与升级
+
+首次启动：安装 PM2 并完成构建后运行 `npm run start:pm2`，成功后 `pm2 save`。Web 默认监听 `127.0.0.1:50080`。Web 和 Worker 都读取 `.env`；凭据遵循外部环境变量、`.env` 和 Google 默认凭据发现机制，不在 PM2 配置中强制指定路径。
+
+**从旧版本升级必须独占切换，不能滚动混跑。** Redis 队列名称带 `v2` 仍不足以隔离旧 worker：旧代码每 60 秒扫描同一个数据库的所有排队任务，会把新任务搬回旧队列。新增数据库版本字段也无法约束已经运行的旧代码。
+
+1. 先停止所有连接此数据库的 Web/API 入口，暂停外部任务提交。PM2 可执行 `pm2 stop banana-web`；systemd、容器及其他主机也要停止对应入口。
+2. 首次迁移时保留旧 worker 排空队列，在数据库执行下面的只读查询，等待 `queued` 和 `running` 都为 0。旧 PM2 条目的停机等待可能只有 15 秒，不能直接对正在生成的进程执行重启或删除。失败任务会保留在数据库中，升级后可在任务页重试。
+
+   ```sql
+   SELECT status, COUNT(*) AS count
+   FROM generations
+   WHERE status IN ('queued', 'running')
+   GROUP BY status;
+   ```
+
+3. 停止所有旧 worker 及其自动重启来源，包括其他 checkout、`tsx watch`、其他用户的 PM2、systemd、容器和其他主机。PM2 执行 `pm2 stop banana-worker`，再 `pm2 delete banana-web banana-worker` 并 `pm2 save`，清除旧条目缓存的凭据和进程参数。若从 systemd 迁移，还需 `sudo systemctl disable --now banana-worker.service banana-web.service`。如果队列无法排空，先排查失联 worker / 上游故障，不要带着未完成任务强制切换。
+4. 更新代码、安装依赖并运行 `npm run check && npm run build`，然后 `npm run start:pm2` 和 `pm2 save`。启动检查发现本机仍有 `server/worker.ts` / worker watch 进程或旧 PM2 条目时会拒绝启动；它不能检查远端主机，远端旧进程必须在步骤 3 中停止。新 worker 会从数据库恢复排队和租约过期的任务。
+
+新配置直接用 Node + `--import tsx` 运行 worker，让退出信号直接到达任务进程。收到信号后停止领取任务，放回停机期间刚弹出的任务，等待在途生成、保存和队列恢复完成后再关闭连接。PM2 `kill_timeout` 为 900 秒，覆盖最多 4 次生成/下载（每次 120 + 30 秒）、7 秒退避和存储余量；存储长时间不可用或机器强制断电仍可能触发任务恢复。systemd 部署的 Worker 同样应配置 `TimeoutStopSec=900`（参见 [PM2 停机文档](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/)）。

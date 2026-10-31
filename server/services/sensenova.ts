@@ -69,6 +69,11 @@ export async function checkSenseNovaConnection() {
 }
 
 export async function generateWithSenseNova(input: SenseNovaImageRequest): Promise<SenseNovaImageResult> {
+  return prepareSenseNovaGeneration(input)()
+}
+
+/** 一个任务只编码/序列化一次；每张生成和重试共用请求体，各自使用独立连接和超时。 */
+export function prepareSenseNovaGeneration(input: SenseNovaImageRequest): () => Promise<SenseNovaImageResult> {
   const config = getServerConfig().sensenova
   if (!config.apiKey) {
     throw new AppError('SENSENOVA_NOT_CONFIGURED', '请先在 .env 中配置 SENSENOVA_API_KEY', 503)
@@ -95,15 +100,20 @@ export async function generateWithSenseNova(input: SenseNovaImageRequest): Promi
   }
 
   const endpoint = `${config.baseUrl}/images/${references.length ? 'edits' : 'generations'}`
+  const body = JSON.stringify(payload)
+  return () => sendSenseNovaRequest(endpoint, config.apiKey, body)
+}
+
+async function sendSenseNovaRequest(endpoint: string, apiKey: string, body: string): Promise<SenseNovaImageResult> {
   const result = await withAbortableTimeout(async (signal) => {
     const response = await fetch(endpoint, {
       method: 'POST',
       signal,
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload),
+      body,
     })
 
     if (!response.ok) {

@@ -1,13 +1,7 @@
-const path = require('node:path')
-
 const cwd = __dirname
-const home = process.env.HOME || '/backup/home/sun'
-const adc = path.join(home, '.config/gcloud/application_default_credentials.json')
 
 const commonEnv = {
   NODE_ENV: 'production',
-  HOME: home,
-  GOOGLE_APPLICATION_CREDENTIALS: adc,
 }
 
 module.exports = {
@@ -30,11 +24,13 @@ module.exports = {
     {
       name: 'banana-worker',
       cwd,
-      script: 'node_modules/tsx/dist/cli.mjs',
-      args: '--tsconfig .nuxt/tsconfig.server.json server/worker.ts',
+      script: 'server/worker.ts',
       interpreter: 'node',
-      env: commonEnv,
-      kill_timeout: 15000,
+      node_args: '--import tsx',
+      // 直接运行 worker，让 PM2 的信号到达处理任务的进程。
+      env: { ...commonEnv, TSX_TSCONFIG_PATH: '.nuxt/tsconfig.server.json' },
+      // 最多 4 次 × (生成 120s + 下载 30s) + 退避 7s，另留存储和排空余量。
+      kill_timeout: 900000,
       max_memory_restart: '1G',
       time: true,
     },

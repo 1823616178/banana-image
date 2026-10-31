@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ASPECT_RATIOS, IMAGE_SIZES, defaultModel } from '#shared/config/models'
 import { SENSENOVA_ASPECT_RATIOS } from '#shared/config/sensenova'
-import { checkSenseNovaConnection, generateWithSenseNova, mapDimensions } from '#server/services/sensenova'
+import { checkSenseNovaConnection, generateWithSenseNova, mapDimensions, prepareSenseNovaGeneration } from '#server/services/sensenova'
 import { classifyGenerationError } from '#server/services/generationErrors'
 import type { SenseNovaImageRequest } from '#server/services/sensenova'
 
@@ -91,6 +91,27 @@ describe('SenseNova 文生图与图生图请求', () => {
   it('超过 5 张参考图时在调用上游之前拒绝', async () => {
     await expect(generateWithSenseNova({ ...input, referenceImages: Array.from({ length: 6 }, () => reference) })).rejects.toMatchObject({ code: 'TOO_MANY_REFERENCES', statusCode: 400 })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('并发生成和失败重试复用序列化请求，各请求有独立的取消信号', async () => {
+    const data = Buffer.from('reference-original')
+    const encode = vi.spyOn(data, 'toString')
+    const generate = prepareSenseNovaGeneration({ ...input, referenceImages: [{ data, mimeType: 'image/jpeg' }] })
+    expect(encode).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+    fetchMock.mockResolvedValueOnce(Response.json({ error: { message: 'busy' } }, { status: 429 }))
+      .mockImplementation(async () => successResponse())
+    const outcomes = await Promise.allSettled([generate(), generate(), generate(), generate()])
+    expect(outcomes[0]!.status).toBe('rejected')
+    expect(outcomes.slice(1).every(item => item.status === 'fulfilled')).toBe(true)
+    // 原始 Buffer 变化不会修改同一任务已准备好的请求。
+    data.fill(0)
+    await generate()
+    expect(encode).toHaveBeenCalledTimes(1)
+    const requests = fetchMock.mock.calls.map(call => call[1]!)
+    expect(new Set(requests.map(request => request.body)).size).toBe(1)
+    expect(new Set(requests.map(request => request.signal)).size).toBe(5)
+    expect(requestedPayload().images[0].image_url).toBe(`data:image/jpeg;base64,${Buffer.from('reference-original').toString('base64')}`)
   })
 
   it('兼容 URL 响应，下载并保留图片类型', async () => {

@@ -13,7 +13,7 @@ import { getSettingsMap, settingValue } from '#server/services/settings'
 import { resolveConfiguredModels, validateModelRequest } from '#server/services/modelCatalog'
 import { deleteStoredFiles, readStoredImage, saveImage } from '#server/services/storage'
 import { generateWithVertex } from '#server/services/vertex'
-import { generateWithSenseNova } from '#server/services/sensenova'
+import { prepareSenseNovaGeneration } from '#server/services/sensenova'
 import { DEFAULT_MODELS } from '#shared/config/models'
 import type { ModelDefinition } from '#shared/config/models'
 import { AppError, logCaughtError } from '#server/utils/errors'
@@ -97,25 +97,21 @@ export async function processGeneration(id: string) {
   if (!model) throw new AppError('MODEL_NOT_ALLOWED', '所选模型不在可用列表中', 400)
   validateModelRequest(model, generation)
   const references = await loadReferences(generation)
+  const request = {
+    prompt: generation.finalPrompt,
+    model: generation.model,
+    aspectRatio: generation.aspectRatio,
+    imageSize: generation.imageSize,
+    referenceImages: references,
+  }
+  const generate = model.provider === 'sensenova'
+    ? prepareSenseNovaGeneration(request)
+    : () => generateWithVertex(request)
 
   const outcomes = await Promise.allSettled(Array.from({ length: generation.count }, async () => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const result = model.provider === 'sensenova'
-          ? await generateWithSenseNova({
-            prompt: generation.finalPrompt,
-            model: generation.model,
-            aspectRatio: generation.aspectRatio,
-            imageSize: generation.imageSize,
-            referenceImages: references,
-          })
-          : await generateWithVertex({
-            prompt: generation.finalPrompt,
-            model: generation.model,
-            aspectRatio: generation.aspectRatio,
-            imageSize: generation.imageSize,
-            referenceImages: references,
-          })
+        const result = await generate()
         if (!result.images.length) throw noImageError(result.finishReasons, result.text)
         return result
       } catch (error) {

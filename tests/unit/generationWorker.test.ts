@@ -58,6 +58,8 @@ describe('Worker 参考图传递', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
   })
@@ -90,5 +92,21 @@ describe('Worker 参考图传递', () => {
       ],
     }))
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('四张并发生成及上游重试仅编码每张参考图一次', async () => {
+    vi.useFakeTimers()
+    mocks.generationRepository.findOneBy.mockResolvedValue({ ...task, count: 4 })
+    const referenceData = [Buffer.from('main.jpg'), Buffer.from('second.png')]
+    const encoders = referenceData.map(data => vi.spyOn(data, 'toString'))
+    mocks.readStoredImage.mockResolvedValueOnce({ data: referenceData[0] }).mockResolvedValueOnce({ data: referenceData[1] })
+    fetchMock.mockResolvedValueOnce(Response.json({ error: { message: 'busy' } }, { status: 429 }))
+      .mockImplementation(async () => Response.json({ data: [{ b64_json: generated.toString('base64') }] }))
+    const processing = processGeneration(task.id)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(await processing).toBe('succeeded')
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(mocks.saveImage).toHaveBeenCalledTimes(4)
+    for (const encoder of encoders) expect(encoder).toHaveBeenCalledTimes(1)
   })
 })

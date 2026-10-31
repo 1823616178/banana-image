@@ -14,7 +14,7 @@ import { getSettingsMap, settingValue } from '#server/services/settings'
 import { resolveConfiguredModels, validateModelRequest } from '#server/services/modelCatalog'
 import { AppError } from '#server/utils/errors'
 
-// v2: 避开旧部署遗留 worker 抢队列（旧代码会把商汤模型当 Vertex 模型请求）
+// 队列版本不隔离数据库恢复扫描；升级必须先停止全部旧 worker（见 README）。
 export const GENERATION_QUEUE = 'bi:queue:generation:v2'
 
 export interface CreateGenerationInput {

@@ -3,28 +3,24 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import type Redis from 'ioredis'
 
+let stopping = false
+const requestShutdown = () => { stopping = true }
+// 初始化过程中收到退出信号也先停止领任务，再关闭资源。
+process.once('SIGINT', requestShutdown)
+process.once('SIGTERM', requestShutdown)
+
 if (existsSync('.env')) process.loadEnvFile('.env')
 
 const { initializeDatabase, dataSource } = await import('#server/db/data-source')
-const { GENERATION_QUEUE, setTaskStatus } = await import('#server/services/generation')
+const { setTaskStatus } = await import('#server/services/generation')
+const { consumeGenerationQueue } = await import('#server/services/generationConsumer')
 const { processGeneration, recoverGenerationQueue } = await import('#server/services/generationWorker')
 const { classifyGenerationError } = await import('#server/services/generationErrors')
 const { logCaughtError } = await import('#server/utils/errors')
 const { connectRedis, getRedis, closeRedis } = await import('#server/services/redis')
 const { Generation } = await import('#server/db/entities/Generation')
 
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const workerName = `${hostname()}:${process.pid}`
-let stopping = false
-
-function generationId(entry: string) {
-  try {
-    const id = String(JSON.parse(entry).generationId ?? '')
-    return /^\d+$/.test(id) ? id : null
-  } catch {
-    return /^\d+$/.test(entry) ? entry : null
-  }
-}
 
 async function releaseLock(id: string, token: string) {
   await getRedis().eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, `bi:lock:gen:${id}`, token).catch((error) => {
@@ -96,50 +92,51 @@ async function consume(index: number, clients: Redis[]) {
   const redis = getRedis().duplicate({ maxRetriesPerRequest: null })
   clients.push(redis)
   await redis.connect()
-  while (!stopping) {
-    try {
-      const result = await redis.brpop(GENERATION_QUEUE, 5)
-      if (!result) continue
-      const id = generationId(result[1])
-      if (id) await runTask(id, consumerId)
-      else console.error('[worker] discarded malformed queue entry')
-    } catch (error) {
-      logCaughtError(`worker consumer ${index}`, error)
-      if (!stopping) await delay(2000)
-    }
-  }
+  await consumeGenerationQueue(redis, {
+    isStopping: () => stopping,
+    runTask: id => runTask(id, consumerId),
+    onError: error => logCaughtError(`worker consumer ${index}`, error),
+  })
 }
 
 async function main() {
-  await initializeDatabase()
-  await connectRedis()
-  await recoverGenerationQueue()
-  const config = await import('#server/utils/config').then(module => module.getServerConfig())
   const clients: Redis[] = []
-  const consumers = Array.from({ length: config.workerConcurrency }, (_, index) => consume(index + 1, clients))
-  let recovering = false
-  const recovery = setInterval(() => {
-    if (recovering || stopping) return
-    recovering = true
-    void recoverGenerationQueue().catch(error => logCaughtError('worker recovery', error)).finally(() => { recovering = false })
-  }, 60_000)
-
-  console.info(`[worker] ${workerName} started with concurrency ${config.workerConcurrency}`)
-  const shutdown = async () => {
+  let recovery: ReturnType<typeof setInterval> | undefined
+  let recovering: Promise<void> | undefined
+  try {
+    await initializeDatabase()
+    await connectRedis()
     if (stopping) return
+    await recoverGenerationQueue()
+    if (stopping) return
+    const config = await import('#server/utils/config').then(module => module.getServerConfig())
+    const consumers = Array.from({ length: config.workerConcurrency }, (_, index) => consume(index + 1, clients))
+    recovery = setInterval(() => {
+      if (recovering || stopping) return
+      recovering = recoverGenerationQueue()
+        .catch(error => logCaughtError('worker recovery', error))
+        .finally(() => { recovering = undefined })
+    }, 60_000)
+
+    console.info(`[worker] ${workerName} started with concurrency ${config.workerConcurrency}`)
+    // 即使一个 consumer 初始化失败，也先排空其他 consumer 已开始的任务。
+    const outcomes = await Promise.allSettled(consumers.map(consumer => consumer.catch(error => {
+      stopping = true
+      throw error
+    })))
+    const failure = outcomes.find(outcome => outcome.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+  } finally {
     stopping = true
     clearInterval(recovery)
-    await Promise.all(consumers)
+    await recovering
     for (const client of clients) client.disconnect()
     await closeRedis()
     if (dataSource.isInitialized) await dataSource.destroy()
-    process.exit(0)
   }
-  process.once('SIGINT', () => void shutdown())
-  process.once('SIGTERM', () => void shutdown())
 }
 
-void main().catch((error) => {
+void main().then(() => process.exit(0)).catch((error) => {
   logCaughtError('worker startup', error)
   process.exit(1)
 })

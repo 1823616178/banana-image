@@ -8,6 +8,7 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
+    "start:pm2": "node scripts/check-workers-stopped.mjs && pm2 start ecosystem.config.cjs",
     "postinstall": "nuxt prepare",
     "typecheck": "nuxt prepare && nuxt typecheck",
     "worker": "tsx --tsconfig .nuxt/tsconfig.server.json server/worker.ts",
