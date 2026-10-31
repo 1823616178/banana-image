@@ -4,7 +4,8 @@ import { hostname } from 'node:os'
 import type Redis from 'ioredis'
 
 let stopping = false
-const requestShutdown = () => { stopping = true }
+const shutdown = new AbortController()
+const requestShutdown = () => { stopping = true; shutdown.abort() }
 // 初始化过程中收到退出信号也先停止领任务，再关闭资源。
 process.once('SIGINT', requestShutdown)
 process.once('SIGTERM', requestShutdown)
@@ -74,7 +75,7 @@ async function runTask(id: string, consumerId: string) {
   }, 20_000)
 
   try {
-    const status = await processGeneration(id)
+    const status = await processGeneration(id, { signal: shutdown.signal })
     if (status) console.info(`[worker] generation ${id} ${status}`)
   } catch (error) {
     const classified = classifyGenerationError(error)
@@ -121,16 +122,17 @@ async function main() {
     console.info(`[worker] ${workerName} started with concurrency ${config.workerConcurrency}`)
     // 即使一个 consumer 初始化失败，也先排空其他 consumer 已开始的任务。
     const outcomes = await Promise.allSettled(consumers.map(consumer => consumer.catch(error => {
-      stopping = true
+      requestShutdown()
       throw error
     })))
     const failure = outcomes.find(outcome => outcome.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
   } finally {
-    stopping = true
+    requestShutdown()
     clearInterval(recovery)
     await recovering
     for (const client of clients) client.disconnect()
+    await import('#server/services/copilot').then(module => module.closeCopilotConnections())
     await closeRedis()
     if (dataSource.isInitialized) await dataSource.destroy()
   }

@@ -24,7 +24,7 @@ export function classifyGenerationError(error: unknown, provider: ModelProvider 
   }
 
   // 下载已在适配器内部重试，不能把 CDN 的 403/404/超时当成生成错误再出图。
-  if (code === 'COPILOT_DOWNLOAD_FAILED') {
+  if (code === 'COPILOT_DOWNLOAD_FAILED' || code === 'COPILOT_STATE_UNKNOWN' || code === 'WORKER_STOPPING') {
     return { code, message, retry: 'never', blocked: false }
   }
 

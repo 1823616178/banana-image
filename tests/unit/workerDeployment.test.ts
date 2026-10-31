@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { assertFreshPm2Processes, findWorkerProcesses } from '../../scripts/check-workers-stopped.mjs'
+import { COPILOT_TIMEOUT_MS, COPILOT_DOWNLOAD_TIMEOUT_MS } from '#server/services/copilotQueue'
 
 const require = createRequire(import.meta.url)
 const ecosystem = require('../../ecosystem.config.cjs')
@@ -64,5 +65,6 @@ describe('PM2 凭据与退出配置', () => {
     expect(worker.script).toBe('server/worker.ts')
     expect(worker.node_args).toBe('--import tsx')
     expect(worker.kill_timeout).toBeGreaterThanOrEqual(4 * (120_000 + 30_000) + 7_000 + 120_000)
+    expect(worker.kill_timeout).toBeGreaterThanOrEqual(COPILOT_TIMEOUT_MS + COPILOT_DOWNLOAD_TIMEOUT_MS + 120_000)
   })
 })

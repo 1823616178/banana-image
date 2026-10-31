@@ -29,8 +29,9 @@ module.exports = {
       node_args: '--import tsx',
       // 直接运行 worker，让 PM2 的信号到达处理任务的进程。
       env: { ...commonEnv, TSX_TSCONFIG_PATH: '.nuxt/tsconfig.server.json' },
-      // 最多 4 次 × (生成 120s + 下载 30s) + 退避 7s，另留存储和排空余量。
-      kill_timeout: 900000,
+      // 停机取消未开始的 Copilot 请求，只排空已在执行的请求、下载和存储。
+      // 覆盖 Copilot 上游生成、四张参考图上传及认证恢复的最大等待预算。
+      kill_timeout: 3300000,
       max_memory_restart: '1G',
       time: true,
     },

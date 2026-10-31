@@ -113,7 +113,7 @@ export const DEFAULT_MODELS: ModelDefinition[] = [
   {
     id: 'copilot-image',
     name: 'Microsoft Copilot',
-    description: '经自建 Copilot API 服务文生图，约 45–60 秒一张，不支持参考图，比例仅靠提示词引导',
+    description: '经自建 Copilot API 服务生图，约 45–60 秒一张，最多 4 张参考图，比例仅靠提示词引导',
     provider: 'copilot',
     maxReferenceImages: COPILOT_MAX_REFERENCE_IMAGES,
     // 使用个人 Copilot 会员额度，不按张计费
@@ -138,8 +138,8 @@ export function resolveModelCapabilities(id: string, definition?: Partial<Pick<M
   const lower = id.toLowerCase()
   const provider = item?.provider ?? (lower.includes('sensenova') ? 'sensenova' : lower.includes('copilot') ? 'copilot' : 'vertex')
   if (provider === 'copilot') {
-    // Copilot 仅文生图，无尺寸参数
-    return { provider, maxReferenceImages: 0, supportedAspectRatios: COPILOT_ASPECT_RATIOS, supportedImageSizes: COPILOT_IMAGE_SIZES }
+    // Copilot 无尺寸参数；参考图经 /v1/images/edits 上传
+    return { provider, maxReferenceImages: COPILOT_MAX_REFERENCE_IMAGES, supportedAspectRatios: COPILOT_ASPECT_RATIOS, supportedImageSizes: COPILOT_IMAGE_SIZES }
   }
   return {
     provider,

@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { Agent } from 'undici'
 import type { AspectRatio, ImageSize } from '#shared/types/api'
-import { COPILOT_ASPECT_RATIOS, COPILOT_IMAGE_SIZES } from '#shared/config/copilot'
-import { getRedis } from '#server/services/redis'
-import { AppError, logCaughtError } from '#server/utils/errors'
+import { COPILOT_ASPECT_RATIOS, COPILOT_IMAGE_SIZES, COPILOT_MAX_REFERENCE_IMAGES } from '#shared/config/copilot'
+import { checkCopilotState, COPILOT_TIMEOUT_MS, COPILOT_DOWNLOAD_TIMEOUT_MS, withCopilotSlot } from '#server/services/copilotQueue'
+import { AppError } from '#server/utils/errors'
 import { getServerConfig } from '#server/utils/config'
 import { TimeoutError, withAbortableTimeout } from '#server/utils/async'
 
@@ -26,34 +26,11 @@ interface CopilotResponse {
   data?: Array<{ url?: string, b64_json?: string, revised_prompt?: string | null }>
 }
 
-/** Copilot 单张约 45–60 秒，留足余量。 */
-export const COPILOT_TIMEOUT_MS = 150_000
-const COPILOT_LOCK_MS = COPILOT_TIMEOUT_MS + 30_000
-const COPILOT_DOWNLOAD_TIMEOUT_MS = 60_000
+export { COPILOT_TIMEOUT_MS } from '#server/services/copilotQueue'
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-
-/** 上游只允许一个生成请求；排队不占用单张超时，租约保证进程退出后能恢复。 */
-async function withCopilotSlot<T>(endpoint: string, action: () => Promise<T>): Promise<T> {
-  const redis = getRedis()
-  const key = `bi:lock:copilot:${createHash('sha256').update(new URL(endpoint).origin).digest('hex')}`
-  const token = randomUUID()
-  while (await redis.set(key, token, 'PX', COPILOT_LOCK_MS, 'NX') !== 'OK') await delay(500)
-
-  let timedOut = false
-  try {
-    return await action()
-  } catch (error) {
-    timedOut = error instanceof TimeoutError
-    throw error
-  } finally {
-    // HTTP 断开不会取消上游的同步生成；超时后保留租约，给上游留出收尾时间。
-    if (!timedOut) {
-      await redis.eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, key, token).catch((error) => {
-        logCaughtError('copilot release lock', error)
-      })
-    }
-  }
-}
+// 同时延长 HTTP 客户端的响应头超时，避免 fetch 默认的 300s 提前断开连接。
+const dispatcher = new Agent({ headersTimeout: COPILOT_TIMEOUT_MS, bodyTimeout: COPILOT_TIMEOUT_MS })
+export const closeCopilotConnections = () => dispatcher.close()
 
 /** Copilot 无尺寸参数，只能用文字提示画面比例。 */
 export function aspectRatioHint(aspectRatio: AspectRatio) {
@@ -67,6 +44,7 @@ export async function checkCopilotConnection() {
   if (!config.baseUrl) {
     throw new AppError('COPILOT_NOT_CONFIGURED', '未配置 COPILOT_BASE_URL', 503)
   }
+  await checkCopilotState(config.baseUrl)
   await withAbortableTimeout(async (signal) => {
     const res = await fetch(`${config.baseUrl}/healthz`, { method: 'GET', signal })
     if (!res.ok) {
@@ -87,13 +65,14 @@ export async function generateWithCopilot(input: CopilotImageRequest): Promise<C
   return prepareCopilotGeneration(input)()
 }
 
-export function prepareCopilotGeneration(input: CopilotImageRequest): () => Promise<CopilotImageResult> {
+export function prepareCopilotGeneration(input: CopilotImageRequest, options: { signal?: AbortSignal } = {}): () => Promise<CopilotImageResult> {
   const config = getServerConfig().copilot
   if (!config.baseUrl) {
     throw new AppError('COPILOT_NOT_CONFIGURED', '请先在 .env 中配置 COPILOT_BASE_URL', 503)
   }
-  if (input.referenceImages?.length) {
-    throw new AppError('TOO_MANY_REFERENCES', 'Copilot 仅支持文生图，不支持参考图', 400)
+  const references = input.referenceImages ?? []
+  if (references.length > COPILOT_MAX_REFERENCE_IMAGES) {
+    throw new AppError('TOO_MANY_REFERENCES', `Copilot 最多使用 ${COPILOT_MAX_REFERENCE_IMAGES} 张参考图`, 400)
   }
   if (!COPILOT_IMAGE_SIZES.includes(input.imageSize)) {
     throw new AppError('UNSUPPORTED_IMAGE_SIZE', 'Copilot 仅支持 1K 分辨率', 400)
@@ -101,29 +80,51 @@ export function prepareCopilotGeneration(input: CopilotImageRequest): () => Prom
   if (!COPILOT_ASPECT_RATIOS.includes(input.aspectRatio)) {
     throw new AppError('UNSUPPORTED_ASPECT_RATIO', 'Copilot 不支持该画布比例', 400)
   }
-  const body = JSON.stringify({
-    model: input.model,
-    prompt: `${input.prompt}${aspectRatioHint(input.aspectRatio)}`,
-    n: 1,
-    response_format: 'url',
-  })
+  const prompt = `${input.prompt}${aspectRatioHint(input.aspectRatio)}`
+  if (references.length) {
+    const endpoint = `${config.baseUrl}/v1/images/edits`
+    return () => sendCopilotRequest(endpoint, () => {
+      // 每次调用重新构造表单，重试时不复用已消费的 body。
+      const form = new FormData()
+      form.append('model', input.model)
+      form.append('prompt', prompt)
+      form.append('n', '1')
+      form.append('response_format', 'url')
+      references.forEach((ref, index) => {
+        const ext = ref.mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png'
+        form.append('image[]', new Blob([new Uint8Array(ref.data)], { type: ref.mimeType }), `reference-${index + 1}.${ext}`)
+      })
+      return form
+    }, options.signal)
+  }
+  const body = JSON.stringify({ model: input.model, prompt, n: 1, response_format: 'url' })
   const endpoint = `${config.baseUrl}/v1/images/generations`
-  return () => sendCopilotRequest(endpoint, body)
+  return () => sendCopilotRequest(endpoint, () => body, options.signal)
 }
 
-async function sendCopilotRequest(endpoint: string, body: string): Promise<CopilotImageResult> {
-  const result = await withCopilotSlot(endpoint, () => withAbortableTimeout(async (signal) => {
-    const response = await fetch(endpoint, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body })
+async function sendCopilotRequest(endpoint: string, createBody: () => string | FormData, stopSignal?: AbortSignal): Promise<CopilotImageResult> {
+  const result = await withCopilotSlot(endpoint, stopSignal, slot => withAbortableTimeout(async (signal) => {
+    // 获得串行执行权之后才复制参考图，排队请求只保留原始 Buffer。
+    const body = createBody()
+    // FormData 由 fetch 自动带上 multipart boundary。
+    const headers: Record<string, string> = typeof body === 'string' ? { 'Content-Type': 'application/json' } : {}
+    await slot.start()
+    const requestOptions: RequestInit & { dispatcher: Agent } = { method: 'POST', signal, headers, body, dispatcher }
+    const response = await fetch(endpoint, requestOptions)
     if (!response.ok) {
       const errorText = await response.text()
       let parsedMessage = errorText
+      let errorType: string | undefined
       try {
         const errJson = JSON.parse(errorText)
         parsedMessage = errJson.error?.message || errJson.detail || errJson.message || errorText
+        errorType = errJson.error?.type
       } catch {
         // 保持原始文本
       }
       const status = response.status
+      // 代理的 5xx 可能先于上游任务结束；只信任桥接服务明确返回的错误。
+      if (status < 500 || ['upstream_error', 'upstream_timeout', 'clearance_required', 'authentication_error', 'rate_limit_error', 'invalid_request_error'].includes(errorType ?? '')) slot.complete()
       if (status === 401 || status === 403) {
         throw new AppError('COPILOT_AUTH_FAILED', `Copilot 登录已失效 (HTTP ${status}): ${parsedMessage}`, status)
       }
@@ -136,7 +137,9 @@ async function sendCopilotRequest(endpoint: string, body: string): Promise<Copil
         status >= 400 && status < 600 ? status : 502
       )
     }
-    return await response.json() as CopilotResponse
+    const result = await response.json() as CopilotResponse
+    slot.complete()
+    return result
   }, COPILOT_TIMEOUT_MS, 'Copilot 图像生成超时'))
 
   const first = result.data?.[0]

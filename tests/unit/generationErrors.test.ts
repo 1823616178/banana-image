@@ -90,4 +90,9 @@ describe('多供应商错误分类', () => {
     expect(classified).toEqual({ code: 'COPILOT_DOWNLOAD_FAILED', message, retry: 'never', blocked: false })
     expect(classifyGenerationError(new AppError(classified.code, classified.message, 502), 'copilot')).toEqual(classified)
   })
+
+  it.each(['COPILOT_STATE_UNKNOWN', 'WORKER_STOPPING'])('%s 不自动重新生成', (code) => {
+    const error = new AppError(code, '连接超时，HTTP 504，状态尚未确认', 503)
+    expect(classifyGenerationError(error, 'copilot')).toMatchObject({ code, retry: 'never' })
+  })
 })

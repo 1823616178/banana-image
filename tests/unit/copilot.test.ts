@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { aspectRatioHint, checkCopilotConnection, COPILOT_TIMEOUT_MS, generateWithCopilot } from '#server/services/copilot'
+import { aspectRatioHint, checkCopilotConnection, COPILOT_TIMEOUT_MS, generateWithCopilot, prepareCopilotGeneration } from '#server/services/copilot'
 import type { CopilotImageRequest } from '#server/services/copilot'
 import { classifyGenerationError } from '#server/services/generationErrors'
 import { resolveModelCapabilities } from '#shared/config/models'
 import { resolveConfiguredModels } from '#server/services/modelCatalog'
-import { TimeoutError } from '#server/utils/async'
+import { copilotKeys, COPILOT_LEASE_MS } from '#server/services/copilotQueue'
+import { copilotRedis as redis, leases, inflight, resetCopilotRedis } from '../helpers/copilotRedis'
 
-const redis = vi.hoisted(() => ({ set: vi.fn(), eval: vi.fn() }))
-vi.mock('#server/services/redis', () => ({ getRedis: () => redis }))
-const leases = new Map<string, { token: string, expiresAt: number }>()
+vi.mock('#server/services/redis', async () => {
+  const { copilotRedis } = await import('../helpers/copilotRedis')
+  return { getRedis: () => copilotRedis }
+})
 
 const input: CopilotImageRequest = { prompt: '海边的灯塔', model: 'copilot-image', aspectRatio: '16:9', imageSize: '1K' }
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
@@ -16,23 +18,13 @@ const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubEnv('COPILOT_BASE_URL', 'http://copilot.example:8000/')
-  leases.clear()
-  redis.set.mockImplementation(async (key: string, token: string, _px: string, ttl: number) => {
-    if ((leases.get(key)?.expiresAt ?? 0) > Date.now()) return null
-    leases.set(key, { token, expiresAt: Date.now() + ttl })
-    return 'OK'
-  })
-  redis.eval.mockImplementation(async (_script: string, _count: number, key: string, token: string) => {
-    if (leases.get(key)?.token !== token) return 0
-    leases.delete(key)
-    return 1
-  })
+  resetCopilotRedis()
 })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals() })
 
 describe('Copilot 文生图', () => {
-  it('能力：仅 1K、无参考图', () => {
-    expect(resolveModelCapabilities('copilot-image')).toMatchObject({ provider: 'copilot', maxReferenceImages: 0, supportedImageSizes: ['1K'] })
+  it('能力：仅 1K、最多 4 张参考图', () => {
+    expect(resolveModelCapabilities('copilot-image')).toMatchObject({ provider: 'copilot', maxReferenceImages: 4, supportedImageSizes: ['1K'] })
     expect(aspectRatioHint('16:9')).toContain('横版')
     expect(aspectRatioHint('2:3')).toContain('竖版')
   })
@@ -55,13 +47,30 @@ describe('Copilot 文生图', () => {
     expect(result.images[0]).toEqual({ data: png, mimeType: 'image/png' })
   })
 
-  it('拒绝参考图', async () => {
-    await expect(generateWithCopilot({ ...input, referenceImages: [{ data: png, mimeType: 'image/png' }] })).rejects.toMatchObject({ code: 'TOO_MANY_REFERENCES', statusCode: 400 })
+  it('参考图走 edits 接口（multipart）', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ data: [{ b64_json: png.toString('base64') }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff])
+    const result = await generateWithCopilot({ ...input, referenceImages: [{ data: png, mimeType: 'image/png' }, { data: jpeg, mimeType: 'image/jpeg' }] })
+    const [url, options] = fetchMock.mock.calls[0]!
+    expect(url).toBe('http://copilot.example:8000/v1/images/edits')
+    expect(options.headers).toEqual({})
+    const form = options.body as FormData
+    expect(form.get('prompt')).toContain('16:9')
+    const files = form.getAll('image[]') as File[]
+    expect(files.map(file => [file.name, file.type])).toEqual([['reference-1.png', 'image/png'], ['reference-2.jpg', 'image/jpeg']])
+    expect(Buffer.from(await files[1]!.arrayBuffer())).toEqual(jpeg)
+    expect(result.images[0]).toEqual({ data: png, mimeType: 'image/png' })
+  })
+
+  it('超过 4 张参考图时拒绝', async () => {
+    const refs = Array.from({ length: 5 }, () => ({ data: png, mimeType: 'image/png' }))
+    await expect(generateWithCopilot({ ...input, referenceImages: refs })).rejects.toMatchObject({ code: 'TOO_MANY_REFERENCES', statusCode: 400 })
   })
 
   it('401 / 504 / 5xx 错误分类', async () => {
     for (const [status, code, retry] of [[401, 'COPILOT_AUTH_FAILED', 'never'], [504, 'COPILOT_TIMEOUT', 'timeout'], [502, 'COPILOT_UNAVAILABLE', 'transient']] as const) {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'x' } }), { status })))
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'x', type: status === 504 ? 'upstream_timeout' : 'upstream_error' } }), { status })))
       const error = await generateWithCopilot(input).catch(failure => failure)
       expect(classifyGenerationError(error, 'copilot')).toMatchObject({ code, retry })
     }
@@ -120,7 +129,7 @@ describe('Copilot 文生图', () => {
     expect(leases.size).toBe(0)
   })
 
-  it('生成超时后保留租约，过期后其他 worker 可继续', async () => {
+  it('生成超时后持久保护阻止重试和新请求，租约过期也不重复生成', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn()
       .mockImplementationOnce(() => new Promise(() => {}))
@@ -128,14 +137,90 @@ describe('Copilot 文生图', () => {
     vi.stubGlobal('fetch', fetchMock)
     const first = generateWithCopilot(input).catch(error => error)
     await vi.advanceTimersByTimeAsync(COPILOT_TIMEOUT_MS)
-    expect(await first).toBeInstanceOf(TimeoutError)
-    expect(redis.eval).not.toHaveBeenCalled()
-    const second = generateWithCopilot(input)
-    await vi.advanceTimersByTimeAsync(29_500)
+    expect(classifyGenerationError(await first, 'copilot')).toMatchObject({ code: 'COPILOT_STATE_UNKNOWN', retry: 'never' })
+    expect(inflight.size).toBe(1)
+    await vi.advanceTimersByTimeAsync(COPILOT_LEASE_MS + 500)
+    await expect(generateWithCopilot(input)).rejects.toMatchObject({ code: 'COPILOT_STATE_UNKNOWN' })
+    await expect(checkCopilotConnection()).rejects.toMatchObject({ code: 'COPILOT_STATE_UNKNOWN' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(500)
-    expect((await second).images[0]?.data).toEqual(png)
     expect(leases.size).toBe(0)
+  })
+
+  it('300 秒慢请求保持租约并返回原结果，没有超时重试', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300_000))
+      return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const processing = Promise.all([generateWithCopilot(input), generateWithCopilot(input)])
+    await vi.advanceTimersByTimeAsync(180_000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(421_000)
+    expect(await processing).toHaveLength(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(inflight.size).toBe(0)
+  })
+
+  it.each(['network', 'gateway'])('不确定的 %s 故障保留保护，后续请求不会出图', async (failure) => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (failure === 'network') throw new TypeError('fetch failed')
+      return new Response('gateway timeout', { status: 504 })
+    }))
+    await expect(generateWithCopilot(input)).rejects.toMatchObject({ code: 'COPILOT_STATE_UNKNOWN' })
+    await expect(generateWithCopilot(input)).rejects.toMatchObject({ code: 'COPILOT_STATE_UNKNOWN' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('进程遗留的持久状态阻止接管后重复出图', async () => {
+    const keys = copilotKeys('http://copilot.example:8000')
+    leases.set(keys.lease, { token: 'dead-worker', expiresAt: Date.now() - 1 })
+    inflight.set(keys.inflight, 'dead-worker')
+    vi.stubGlobal('fetch', vi.fn())
+    await expect(generateWithCopilot(input)).rejects.toMatchObject({ code: 'COPILOT_STATE_UNKNOWN' })
+    expect(fetch).not.toHaveBeenCalled()
+    expect(inflight.get(keys.inflight)).toBe('dead-worker')
+  })
+
+  it('租约丢失时其他 worker 不重复出图，原请求完成后可继续', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 45_000))
+      return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const first = generateWithCopilot(input)
+    await vi.advanceTimersByTimeAsync(1000)
+    leases.clear()
+    await expect(generateWithCopilot(input)).rejects.toMatchObject({ code: 'COPILOT_STATE_UNKNOWN' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(44_000)
+    expect((await first).images[0]?.data).toEqual(png)
+    const next = generateWithCopilot(input)
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect((await next).images[0]?.data).toEqual(png)
+    expect(inflight.size).toBe(0)
+  })
+
+  it('参考图只在获得锁后复制，停机取消排队且不分配额外 Blob', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    redis.set.mockResolvedValue(null)
+    const OriginalBlob = globalThis.Blob
+    const blobSpy = vi.fn()
+    vi.stubGlobal('Blob', class extends OriginalBlob {
+      constructor(parts: BlobPart[], options?: BlobPropertyBag) { super(parts, options); blobSpy() }
+    })
+    vi.stubGlobal('fetch', vi.fn())
+    const generate = prepareCopilotGeneration({ ...input, referenceImages: [{ data: png, mimeType: 'image/png' }] }, { signal: controller.signal })
+    const pending = Promise.allSettled(Array.from({ length: 32 }, () => generate()))
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(blobSpy).not.toHaveBeenCalled()
+    controller.abort()
+    const results = await pending
+    expect(results.every(result => result.status === 'rejected' && result.reason.code === 'WORKER_STOPPING')).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('CDN 短暂 403 只重试下载，不重新生成', async () => {

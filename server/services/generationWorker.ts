@@ -86,7 +86,7 @@ async function recordUsage(generation: Generation, images: number, inputTokens: 
   `, [day, generation.model, images, inputTokens, outputTokens, costUsd])
 }
 
-export async function processGeneration(id: string) {
+export async function processGeneration(id: string, options: { signal?: AbortSignal } = {}) {
   const source = await initializeDatabase()
   const generation = await source.getRepository(Generation).findOneBy({ id })
   if (!generation || generation.status !== 'running') return
@@ -96,8 +96,13 @@ export async function processGeneration(id: string) {
   const configuredModels = settingValue<ModelDefinition[] | string[]>(settings, 'models', DEFAULT_MODELS)
   const model = resolveConfiguredModels(configuredModels).find(item => item.id === generation.model)
   if (!model) throw new AppError('MODEL_NOT_ALLOWED', '所选模型不在可用列表中', 400)
-  validateModelRequest(model, generation)
-  const references = await loadReferences(generation)
+  // 已落库的图片是恢复检查点；停机或进程崩溃后只生成缺少的张数。
+  const savedImages = await source.getRepository(Image).find({ where: { generationId: id, userId: generation.userId ?? IsNull() }, withDeleted: true })
+  const savedIds = new Set(savedImages.map(image => image.id))
+  const remaining = Math.max(0, generation.count - savedImages.length)
+  if (savedImages.length) await setTaskStatus(id, 'running', Math.round(Math.min(savedImages.length, generation.count) / generation.count * 100))
+  if (remaining) validateModelRequest(model, generation)
+  const references = remaining ? await loadReferences(generation) : []
   const request = {
     prompt: generation.finalPrompt,
     model: generation.model,
@@ -105,58 +110,69 @@ export async function processGeneration(id: string) {
     imageSize: generation.imageSize,
     referenceImages: references,
   }
-  const generate = model.provider === 'sensenova'
+  const generate = !remaining ? undefined : model.provider === 'sensenova'
     ? prepareSenseNovaGeneration(request)
     : model.provider === 'copilot'
-      ? prepareCopilotGeneration(request)
+      ? prepareCopilotGeneration(request, { signal: options.signal })
       : () => generateWithVertex(request)
 
-  const outcomes = await Promise.allSettled(Array.from({ length: generation.count }, async () => {
+  const pricing = settingValue<PricingTable>(settings, 'pricing', {})
+  const errors: string[] = []
+  let inputTokens = Number(generation.inputTokens) || 0
+  let outputTokens = Number(generation.outputTokens) || 0
+  let blocked = false
+  let interrupted = false
+  const durationMs = () => (Number(generation.durationMs) || 0) + Date.now() - startedAt
+  const costUsd = () => calculateGenerationCost({ model: generation.model, imageSize: generation.imageSize, imageCount: savedImages.length, inputTokens, outputTokens, pricing })
+  // 保存和进度更新串行执行，生成仍可按供应商能力并发。
+  let saving: Promise<void> = Promise.resolve()
+  const firstIndex = savedImages.length
+  const outcomes = await Promise.allSettled(Array.from({ length: remaining }, async (_, offset) => {
+    const index = firstIndex + offset
+    let result
     for (let attempt = 0; ; attempt++) {
+      if (options.signal?.aborted) throw new AppError('WORKER_STOPPING', '任务将在服务重启后继续', 503)
       try {
-        const result = await generate()
+        result = await generate!()
         if (!result.images.length) throw noImageError(result.finishReasons, result.text)
-        return result
+        break
       } catch (error) {
         const classified = classifyGenerationError(error, model.provider)
         const retryable = shouldRetry(classified, attempt)
-        if (!retryable) throw new AppError(classified.code, classified.message, 502, undefined, { cause: error })
+        if (!retryable) throw new AppError(classified.code, classified.message, 502, error instanceof AppError ? error.details : undefined, { cause: error })
         logCaughtError(`worker generation ${generation.id} attempt ${attempt + 1} retrying`, error)
         await delay(retryDelayMs(attempt))
       }
     }
+    const generated = result
+    const checkpoint = saving.then(async () => {
+      inputTokens += generated.inputTokens
+      outputTokens += generated.outputTokens
+      const image = await persistGeneratedImage(generation, generated.images[0]!.data, index)
+      if (savedIds.has(image.id)) throw new AppError('DUPLICATE_IMAGE', `第 ${index + 1} 张图片与本任务已有结果重复`, 409)
+      savedIds.add(image.id)
+      savedImages.push(image)
+      await source.getRepository(Generation).update({ id }, { inputTokens, outputTokens, costUsd: costUsd().toFixed(4), durationMs: durationMs() })
+      await setTaskStatus(id, 'running', Math.round(savedImages.length / generation.count * 100))
+    })
+    saving = checkpoint.catch(() => {})
+    await checkpoint
   }))
 
-  const savedImages: Image[] = []
-  const errors: string[] = []
-  let inputTokens = 0
-  let outputTokens = 0
-  let blocked = false
-
-  for (const [index, outcome] of outcomes.entries()) {
+  for (const [offset, outcome] of outcomes.entries()) {
+    const index = firstIndex + offset
     if (outcome.status === 'rejected') {
-      logCaughtError(`worker generation ${id} image ${index + 1}`, outcome.reason)
       const classified = classifyGenerationError(outcome.reason, model.provider)
+      if (classified.code === 'WORKER_STOPPING') { interrupted = true; continue }
+      logCaughtError(`worker generation ${id} image ${index + 1}`, outcome.reason)
       errors.push(`第 ${index + 1} 张：${classified.message}`)
       blocked ||= classified.blocked
-      continue
-    }
-    inputTokens += outcome.value.inputTokens
-    outputTokens += outcome.value.outputTokens
-    try {
-      savedImages.push(await persistGeneratedImage(generation, outcome.value.images[0]!.data, index))
-      await setTaskStatus(id, 'running', Math.round((index + 1) / generation.count * 100))
-    } catch (error) {
-      logCaughtError(`worker generation ${id} image ${index + 1} save`, error)
-      errors.push(`第 ${index + 1} 张保存失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  const pricing = settingValue<PricingTable>(settings, 'pricing', {})
-  const costUsd = calculateGenerationCost({ model: generation.model, imageSize: generation.imageSize, imageCount: savedImages.length, inputTokens, outputTokens, pricing })
-  const status = savedImages.length === generation.count ? 'succeeded' : savedImages.length ? 'partial' : blocked ? 'blocked' : 'failed'
+  const requeue = interrupted && savedImages.length < generation.count
+  const status = requeue ? 'queued' : savedImages.length >= generation.count ? 'succeeded' : savedImages.length ? 'partial' : blocked ? 'blocked' : 'failed'
   const errorMessage = [...new Set(errors)].join('\n').slice(0, 4000) || null
-  const durationMs = Date.now() - startedAt
 
   await source.getRepository(Generation).update({ id }, {
     status,
@@ -164,18 +180,28 @@ export async function processGeneration(id: string) {
     errorMessage,
     inputTokens,
     outputTokens,
-    costUsd: costUsd.toFixed(4),
-    durationMs,
+    costUsd: costUsd().toFixed(4),
+    durationMs: durationMs(),
+    ...(requeue ? { attemptCount: () => 'GREATEST(attemptCount - 1, 0)' } : {}),
     workerId: null,
     lockedAt: null,
     heartbeatAt: null,
     leaseExpiresAt: null,
   })
+  if (requeue) {
+    const results = await Promise.allSettled([
+      getRedis().lpush(GENERATION_QUEUE, JSON.stringify({ generationId: id })),
+      setTaskStatus(id, 'queued', Math.round(savedImages.length / generation.count * 100)),
+      clearGalleryCache(),
+    ])
+    for (const result of results) if (result.status === 'rejected') logCaughtError(`worker generation ${id} requeue`, result.reason)
+    return 'queued'
+  }
   await setTaskStatus(id, status, 100, errorMessage ?? '')
-  await recordUsage(generation, savedImages.length, inputTokens, outputTokens, costUsd).catch((error) => {
+  await recordUsage(generation, savedImages.length, inputTokens, outputTokens, costUsd()).catch((error) => {
     logCaughtError(`worker generation ${id} usage`, error)
   })
-  const sideEffects = await Promise.allSettled([recordDailyCost(costUsd), clearGalleryCache()])
+  const sideEffects = await Promise.allSettled([recordDailyCost(costUsd()), clearGalleryCache()])
   for (const result of sideEffects) {
     if (result.status === 'rejected') logCaughtError(`worker generation ${id}`, result.reason)
   }

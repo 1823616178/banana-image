@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Generation } from '#server/db/entities/Generation'
 import { Image } from '#server/db/entities/Image'
 import { processGeneration } from '#server/services/generationWorker'
+import { copilotRedis, resetCopilotRedis } from '../helpers/copilotRedis'
+import { setTaskStatus } from '#server/services/generation'
+import { recordDailyCost } from '#server/services/rateLimit'
 
 const mocks = vi.hoisted(() => ({
   generationRepository: { findOneBy: vi.fn(), update: vi.fn() },
-  imageRepository: { findBy: vi.fn(), findOneBy: vi.fn(), create: vi.fn(), save: vi.fn() },
+  imageRepository: { find: vi.fn(), findBy: vi.fn(), findOneBy: vi.fn(), create: vi.fn(), save: vi.fn() },
   source: { getRepository: vi.fn(), query: vi.fn() },
   readStoredImage: vi.fn(),
   saveImage: vi.fn(),
@@ -16,7 +19,10 @@ vi.mock('#server/db/data-source', () => ({ initializeDatabase: async () => mocks
 vi.mock('#server/services/generation', () => ({ GENERATION_QUEUE: 'test:queue', setTaskStatus: vi.fn() }))
 vi.mock('#server/services/images', () => ({ purgeDeletedDuplicate: vi.fn() }))
 vi.mock('#server/services/rateLimit', () => ({ recordDailyCost: vi.fn() }))
-vi.mock('#server/services/redis', () => ({ getRedis: () => ({ scan: async () => ['0', []], set: async () => 'OK', eval: async () => 1 }) }))
+vi.mock('#server/services/redis', async () => {
+  const { copilotRedis } = await import('../helpers/copilotRedis')
+  return { getRedis: () => copilotRedis }
+})
 vi.mock('#server/services/settings', () => ({
   getSettingsMap: async () => ({}),
   settingValue: (_settings: unknown, _key: string, fallback: unknown) => fallback,
@@ -38,6 +44,7 @@ describe('Worker 参考图传递', () => {
 
   beforeEach(() => {
     vi.resetAllMocks()
+    resetCopilotRedis()
     vi.stubGlobal('fetch', fetchMock)
     vi.stubEnv('SENSENOVA_API_KEY', 'test-key')
     vi.stubEnv('SENSENOVA_BASE_URL', 'https://sensenova.example/v1')
@@ -49,8 +56,10 @@ describe('Worker 参考图传递', () => {
       { id: '11', filePath: 'main.jpg', storage: 'ftp', mimeType: 'image/jpeg' },
     ])
     mocks.imageRepository.findOneBy.mockResolvedValue(null)
+    mocks.imageRepository.find.mockResolvedValue([])
     mocks.imageRepository.create.mockImplementation(value => value)
-    mocks.imageRepository.save.mockImplementation(async value => ({ ...value, id: '20' }))
+    let nextImageId = 20
+    mocks.imageRepository.save.mockImplementation(async value => ({ ...value, id: String(nextImageId++) }))
     mocks.readStoredImage.mockImplementation(async path => ({ data: Buffer.from(path) }))
     mocks.saveImage.mockResolvedValue({ sha256: 'unique-hash', filePath: 'generated.png', thumbPath: 'generated.webp', storage: 'local' })
     fetchMock.mockResolvedValue(Response.json({ data: [{ b64_json: generated.toString('base64') }], usage: { input_tokens: 100, output_tokens: 200 } }))
@@ -134,5 +143,99 @@ describe('Worker 参考图传递', () => {
     expect(fetchMock).toHaveBeenCalledTimes(5)
     expect(mocks.saveImage).toHaveBeenCalledTimes(4)
     for (const encoder of encoders) expect(encoder).toHaveBeenCalledTimes(1)
+  })
+
+  it('第一张生成完成后立即保存，不等待其余图片', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('COPILOT_BASE_URL', 'http://copilot.example:8000')
+    mocks.generationRepository.findOneBy.mockResolvedValue({ ...task, model: 'copilot-image', refImageIds: [], imageSize: '1K', count: 4 })
+    fetchMock.mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 120_000))
+      return Response.json({ data: [{ b64_json: generated.toString('base64') }] })
+    })
+    const processing = processGeneration(task.id)
+    await vi.advanceTimersByTimeAsync(121_000)
+    expect(mocks.saveImage).toHaveBeenCalledTimes(1)
+    expect(setTaskStatus).toHaveBeenCalledWith(task.id, 'running', 25)
+    await vi.advanceTimersByTimeAsync(365_000)
+    expect(await processing).toBe('succeeded')
+  })
+
+  it('停机取消等待中的出图，保存正在执行的图片并重新入队；重启仅补齐剩余张数', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('COPILOT_BASE_URL', 'http://copilot.example:8000')
+    const controller = new AbortController()
+    const copilotTask = { ...task, model: 'copilot-image', refImageIds: [], imageSize: '1K', count: 4 }
+    mocks.generationRepository.findOneBy.mockResolvedValue(copilotTask)
+    fetchMock.mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 120_000))
+      return Response.json({ data: [{ b64_json: generated.toString('base64') }] })
+    })
+    const processing = processGeneration(task.id, { signal: controller.signal })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(await processing).toBe('queued')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mocks.saveImage).toHaveBeenCalledTimes(1)
+    expect(copilotRedis.lpush).toHaveBeenCalledWith('test:queue', JSON.stringify({ generationId: task.id }))
+    expect(mocks.generationRepository.update).toHaveBeenLastCalledWith({ id: task.id }, expect.objectContaining({ status: 'queued', attemptCount: expect.any(Function) }))
+    expect(recordDailyCost).not.toHaveBeenCalled()
+
+    mocks.imageRepository.find.mockResolvedValue([{ id: '20', generationId: task.id }])
+    fetchMock.mockImplementation(async () => Response.json({ data: [{ b64_json: generated.toString('base64') }] }))
+    const resumed = processGeneration(task.id)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(await resumed).toBe('succeeded')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(mocks.saveImage).toHaveBeenCalledTimes(4)
+    expect(mocks.source.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO usage_stats'), expect.arrayContaining(['copilot-image', 4]))
+  })
+
+  it('所有图片已保存时直接完成，不重新生成或读取参考图', async () => {
+    mocks.generationRepository.findOneBy.mockResolvedValue({ ...task, count: 2, inputTokens: 200, outputTokens: 400 })
+    mocks.imageRepository.find.mockResolvedValue([{ id: '20' }, { id: '21' }])
+    expect(await processGeneration(task.id)).toBe('succeeded')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(mocks.readStoredImage).not.toHaveBeenCalled()
+    expect(mocks.saveImage).not.toHaveBeenCalled()
+    expect(mocks.generationRepository.update).toHaveBeenLastCalledWith({ id: task.id }, expect.objectContaining({ status: 'succeeded', inputTokens: 200, outputTokens: 400 }))
+  })
+
+  it('两个四张任务停机时只排空当前一张，不等待全部八张串行执行', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('COPILOT_BASE_URL', 'http://copilot.example:8000')
+    const controller = new AbortController()
+    mocks.generationRepository.findOneBy.mockImplementation(async ({ id }) => ({ ...task, id, model: 'copilot-image', refImageIds: [], imageSize: '1K', count: 4 }))
+    fetchMock.mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 120_000))
+      return Response.json({ data: [{ b64_json: generated.toString('base64') }] })
+    })
+    const processing = Promise.all(['100', '101'].map(id => processGeneration(id, { signal: controller.signal })))
+    await vi.advanceTimersByTimeAsync(1000)
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(await processing).toEqual(['queued', 'queued'])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mocks.saveImage).toHaveBeenCalledTimes(1)
+    expect(copilotRedis.lpush).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('恢复已有检查点时保留已记录的 tokens，只生成剩余张数', async () => {
+    mocks.generationRepository.findOneBy.mockResolvedValue({ ...task, count: 2, inputTokens: 100, outputTokens: 200 })
+    mocks.imageRepository.find.mockResolvedValue([{ id: '19' }])
+    expect(await processGeneration(task.id)).toBe('succeeded')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mocks.generationRepository.update).toHaveBeenLastCalledWith({ id: task.id }, expect.objectContaining({ inputTokens: 200, outputTokens: 400 }))
+  })
+
+  it('已停机且未开始的任务立即回队，不消耗生成次数', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    expect(await processGeneration(task.id, { signal: controller.signal })).toBe('queued')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(mocks.saveImage).not.toHaveBeenCalled()
   })
 })
